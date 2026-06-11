@@ -1,5 +1,8 @@
 # bni
 
+[![CI](https://github.com/kojix2/bni/actions/workflows/ci.yml/badge.svg)](https://github.com/kojix2/bni/actions/workflows/ci.yml)
+[![Lines of Code](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2Fkojix2%2Fbni%2Flines)](https://tokei.kojix2.net/github/kojix2/bni)
+
 `bni` is a BAM Name Index for read-centric random access in BAM files sorted with:
 
 ```sh
