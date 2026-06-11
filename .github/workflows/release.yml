@@ -138,7 +138,7 @@ jobs:
 
   macos-portable:
     name: Build portable macOS binary and library
-    runs-on: macos-13
+    runs-on: macos-latest
 
     steps:
       - name: Check out repository
