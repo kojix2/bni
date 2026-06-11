@@ -1,5 +1,8 @@
 *.o
 bni
+libbni.a
+libbni.so
+libbni.dylib
 *.bam
 *.bam.bni
 *.sam

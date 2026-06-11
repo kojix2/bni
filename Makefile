@@ -1,6 +1,8 @@
 CC ?= cc
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
+LIBDIR ?= $(PREFIX)/lib
+INCLUDEDIR ?= $(PREFIX)/include
 
 CPPFLAGS ?=
 CFLAGS ?= -O2 -g -Wall -Wextra -std=c11
@@ -20,8 +22,7 @@ CPPFLAGS += $(HTSLIB_CFLAGS)
 LDLIBS += $(HTSLIB_LIBS)
 endif
 
-SRC = \
-	src/main.c \
+LIB_SRC = \
 	src/bni_util.c \
 	src/bni_format.c \
 	src/bni_index.c \
@@ -29,22 +30,48 @@ SRC = \
 	src/bni_stats.c \
 	src/bni_check.c
 
-OBJ = $(SRC:.c=.o)
+CLI_SRC = src/main.c
+LIB_OBJ = $(LIB_SRC:.c=.o)
+CLI_OBJ = $(CLI_SRC:.c=.o)
+PIC_OBJ = $(LIB_SRC:.c=.pic.o)
 BIN = bni
+STATIC_LIB = libbni.a
 
-all: $(BIN)
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+SHARED_LIB = libbni.dylib
+SHARED_LDFLAGS = -dynamiclib -install_name @rpath/$(SHARED_LIB)
+else
+SHARED_LIB = libbni.so
+SHARED_LDFLAGS = -shared -Wl,-soname,$(SHARED_LIB)
+endif
 
-$(BIN): $(OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)
+all: $(BIN) $(STATIC_LIB) $(SHARED_LIB)
+
+$(BIN): $(CLI_OBJ) $(LIB_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(CLI_OBJ) $(LIB_OBJ) $(LDLIBS)
+
+$(STATIC_LIB): $(LIB_OBJ)
+	ar rcs $@ $(LIB_OBJ)
+
+$(SHARED_LIB): $(PIC_OBJ)
+	$(CC) $(LDFLAGS) $(SHARED_LDFLAGS) -o $@ $(PIC_OBJ) $(LDLIBS)
 
 .c.o:
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
-install: $(BIN)
+%.pic.o: %.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -fvisibility=hidden -DBNI_BUILD_SHARED -c -o $@ $<
+
+install: all
 	mkdir -p $(DESTDIR)$(BINDIR)
+	mkdir -p $(DESTDIR)$(LIBDIR)
+	mkdir -p $(DESTDIR)$(INCLUDEDIR)
 	cp $(BIN) $(DESTDIR)$(BINDIR)/$(BIN)
+	cp $(STATIC_LIB) $(SHARED_LIB) $(DESTDIR)$(LIBDIR)/
+	cp include/bni.h $(DESTDIR)$(INCLUDEDIR)/bni.h
 
 clean:
-	rm -f $(OBJ) $(BIN)
+	rm -f $(LIB_OBJ) $(CLI_OBJ) $(PIC_OBJ) $(BIN) $(STATIC_LIB) $(SHARED_LIB)
 
 .PHONY: all install clean

@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include "bni.h"
+#include "bni_internal.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -81,25 +81,116 @@ static char *trim_line(char *line) {
     return line;
 }
 
-static int write_one_name(const bni_index_t *idx, samFile *in, sam_hdr_t *hdr, BGZF *bgzf_fp,
-                          samFile *out, bam1_t *b, const char *name,
-                          int list_missing, uint64_t *missing_count) {
-    const bni_entry_t *entry = bni_find_entry(idx, name);
-    if (entry == NULL) { if (list_missing) fprintf(stderr, "%s\n", name); (*missing_count)++; return 0; }
-    if (bgzf_seek(bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) { bni_print_error("bgzf_seek failed for QNAME '%s'", name); return -1; }
+struct bni_reader_t {
+    bni_index_t idx;
+    samFile *in;
+    sam_hdr_t *hdr;
+    BGZF *bgzf_fp;
+    bam1_t *record;
+};
+
+int bni_reader_open(const char *bam_path, const char *index_path,
+                    const bni_reader_options_t *opts, bni_reader_t **reader_out) {
+    int threads = opts ? opts->threads : 0;
+    int ignore_metadata = opts ? opts->ignore_metadata : 0;
+
+    if (reader_out == NULL) return -1;
+    *reader_out = NULL;
+    if (bam_path == NULL || strcmp(bam_path, "-") == 0) {
+        bni_print_error("random access from stdin is not supported");
+        return -1;
+    }
+
+    char *default_index = NULL;
+    const char *resolved_index_path = index_path;
+    if (resolved_index_path == NULL) {
+        default_index = bni_default_index_path(bam_path);
+        if (default_index == NULL) { bni_print_error("out of memory while building default index path"); return -1; }
+        resolved_index_path = default_index;
+    }
+
+    bni_reader_t *reader = (bni_reader_t *)calloc(1, sizeof(*reader));
+    if (reader == NULL) {
+        bni_print_error("out of memory while allocating reader");
+        free(default_index);
+        return -1;
+    }
+    if (bni_load_index_file(resolved_index_path, &reader->idx) != 0) goto fail;
+    reader->in = sam_open(bam_path, "r");
+    if (reader->in == NULL) { bni_print_error("could not open %s", bam_path); goto fail; }
+    if (threads > 0 && hts_set_threads(reader->in, threads) != 0) bni_print_warning("failed to enable input threads");
+    reader->hdr = sam_hdr_read(reader->in);
+    if (reader->hdr == NULL) { bni_print_error("failed to read BAM header from %s", bam_path); goto fail; }
+    const htsFormat *fmt = hts_get_format(reader->in);
+    if (fmt != NULL && fmt->format != bam) { bni_print_error("input is not BAM; BNI v1 supports BGZF-compressed BAM only"); goto fail; }
+    if (!ignore_metadata && check_metadata(&reader->idx, bam_path, reader->hdr) != 0) goto fail;
+    reader->bgzf_fp = hts_get_bgzfp(reader->in);
+    if (reader->bgzf_fp == NULL) { bni_print_error("failed to access BGZF handle"); goto fail; }
+    reader->record = bam_init1();
+    if (reader->record == NULL) { bni_print_error("failed to allocate BAM record"); goto fail; }
+
+    free(default_index);
+    *reader_out = reader;
+    return 0;
+
+fail:
+    free(default_index);
+    bni_reader_close(reader);
+    return -1;
+}
+
+void bni_reader_close(bni_reader_t *reader) {
+    if (reader == NULL) return;
+    bam_destroy1(reader->record);
+    sam_hdr_destroy(reader->hdr);
+    if (reader->in) sam_close(reader->in);
+    bni_index_destroy(&reader->idx);
+    free(reader);
+}
+
+const bni_index_t *bni_reader_index(const bni_reader_t *reader) {
+    return reader ? &reader->idx : NULL;
+}
+
+const sam_hdr_t *bni_reader_header(const bni_reader_t *reader) {
+    return reader ? reader->hdr : NULL;
+}
+
+int bni_reader_fetch(bni_reader_t *reader, const char *name,
+                     bni_record_callback callback, void *user,
+                     uint32_t *n_records_out) {
+    if (n_records_out) *n_records_out = 0;
+    if (reader == NULL || name == NULL) return -1;
+    const bni_entry_t *entry = bni_find_entry(&reader->idx, name);
+    if (entry == NULL) return 1;
+    if (bgzf_seek(reader->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) { bni_print_error("bgzf_seek failed for QNAME '%s'", name); return -1; }
     uint32_t seen = 0;
     while (1) {
-        int64_t pos = bgzf_tell(bgzf_fp);
+        int64_t pos = bgzf_tell(reader->bgzf_fp);
         if (pos < 0) { bni_print_error("bgzf_tell failed while reading QNAME '%s'", name); return -1; }
         if ((uint64_t)pos >= entry->end_voff) break;
-        int ret = sam_read1(in, hdr, b);
+        int ret = sam_read1(reader->in, reader->hdr, reader->record);
         if (ret < 0) { bni_print_error("unexpected end of BAM while reading QNAME '%s'", name); return -1; }
-        const char *qname = bam_get_qname(b);
+        const char *qname = bam_get_qname(reader->record);
         if (qname == NULL || strcmp(qname, name) != 0) { bni_print_error("index range for '%s' contains record with QNAME '%s'; rebuild the index", name, qname ? qname : "(null)"); return -1; }
-        if (sam_write1(out, hdr, b) < 0) { bni_print_error("failed writing output record for QNAME '%s'", name); return -1; }
+        if (callback != NULL && callback(reader->record, reader->hdr, user) != 0) return -1;
         seen++;
     }
     if (seen != entry->n_records) { bni_print_error("index range for '%s' contained %u records; expected %u", name, seen, entry->n_records); return -1; }
+    if (n_records_out) *n_records_out = seen;
+    return 0;
+}
+
+typedef struct {
+    samFile *out;
+} write_context_t;
+
+static int write_record_callback(const bam1_t *record, const sam_hdr_t *hdr, void *user) {
+    write_context_t *ctx = (write_context_t *)user;
+    if (sam_write1(ctx->out, hdr, record) < 0) {
+        bni_print_error("failed writing output record");
+        return -1;
+    }
     return 0;
 }
 
@@ -145,41 +236,41 @@ int bni_cmd_get(int argc, char **argv) {
     out_format_t out_fmt = infer_output_format(out_path);
     if (fmt_arg != NULL && parse_output_format(fmt_arg, &out_fmt) != 0) { bni_print_error("unknown output format '%s'; expected bam, sam, or cram", fmt_arg); return 1; }
     if (!write_header && out_fmt != BNI_OUT_SAM) { bni_print_error("--no-header is only supported for SAM output"); return 1; }
-    char *default_index = NULL;
-    const char *index_path = index_path_arg;
-    if (index_path == NULL) { default_index = bni_default_index_path(bam_path); if (default_index == NULL) { bni_print_error("out of memory while building default index path"); return 1; } index_path = default_index; }
-    bni_index_t idx;
-    if (bni_load_index_file(index_path, &idx) != 0) { free(default_index); return 1; }
-    samFile *in = sam_open(bam_path, "r");
-    if (in == NULL) { bni_print_error("could not open %s", bam_path); bni_index_destroy(&idx); free(default_index); return 1; }
-    if (threads > 0 && hts_set_threads(in, threads) != 0) bni_print_warning("failed to enable input threads");
-    sam_hdr_t *hdr = sam_hdr_read(in);
-    if (hdr == NULL) { bni_print_error("failed to read BAM header from %s", bam_path); sam_close(in); bni_index_destroy(&idx); free(default_index); return 1; }
-    const htsFormat *fmt = hts_get_format(in);
-    if (fmt != NULL && fmt->format != bam) { bni_print_error("input is not BAM; BNI v1 supports BGZF-compressed BAM only"); sam_hdr_destroy(hdr); sam_close(in); bni_index_destroy(&idx); free(default_index); return 1; }
-    if (!ignore_metadata && check_metadata(&idx, bam_path, hdr) != 0) { sam_hdr_destroy(hdr); sam_close(in); bni_index_destroy(&idx); free(default_index); return 1; }
-    BGZF *bgzf_fp = hts_get_bgzfp(in);
-    if (bgzf_fp == NULL) { bni_print_error("failed to access BGZF handle"); sam_hdr_destroy(hdr); sam_close(in); bni_index_destroy(&idx); free(default_index); return 1; }
+    bni_reader_options_t reader_opts;
+    memset(&reader_opts, 0, sizeof(reader_opts));
+    reader_opts.threads = threads;
+    reader_opts.ignore_metadata = ignore_metadata;
+    bni_reader_t *reader = NULL;
+    if (bni_reader_open(bam_path, index_path_arg, &reader_opts, &reader) != 0) return 1;
     samFile *out = sam_open(out_path ? out_path : "-", mode_for_format(out_fmt));
-    if (out == NULL) { bni_print_error("could not open output"); sam_hdr_destroy(hdr); sam_close(in); bni_index_destroy(&idx); free(default_index); return 1; }
+    if (out == NULL) { bni_print_error("could not open output"); bni_reader_close(reader); return 1; }
     if (threads > 0 && hts_set_threads(out, threads) != 0) bni_print_warning("failed to enable output threads");
-    if (write_header && sam_hdr_write(out, hdr) != 0) { bni_print_error("failed to write output header"); sam_close(out); sam_hdr_destroy(hdr); sam_close(in); bni_index_destroy(&idx); free(default_index); return 1; }
-    bam1_t *b = bam_init1();
-    if (b == NULL) { bni_print_error("failed to allocate BAM record"); sam_close(out); sam_hdr_destroy(hdr); sam_close(in); bni_index_destroy(&idx); free(default_index); return 1; }
+    if (write_header && sam_hdr_write(out, bni_reader_header(reader)) != 0) { bni_print_error("failed to write output header"); sam_close(out); bni_reader_close(reader); return 1; }
+    write_context_t write_ctx;
+    write_ctx.out = out;
     int status = 0; uint64_t missing = 0;
     if (names_path != NULL) {
         FILE *nf = strcmp(names_path, "-") == 0 ? stdin : fopen(names_path, "r");
         if (nf == NULL) { bni_print_error("could not open name file %s: %s", names_path, strerror(errno)); status = 1; }
         else {
             char *line = NULL; size_t cap = 0; ssize_t nread;
-            while ((nread = getline(&line, &cap, nf)) >= 0) { (void)nread; char *name = trim_line(line); if (name[0] == '\0') continue; if (write_one_name(&idx, in, hdr, bgzf_fp, out, b, name, list_missing, &missing) != 0) { status = 1; break; } }
+            while ((nread = getline(&line, &cap, nf)) >= 0) {
+                (void)nread;
+                char *name = trim_line(line);
+                if (name[0] == '\0') continue;
+                int ret = bni_reader_fetch(reader, name, write_record_callback, &write_ctx, NULL);
+                if (ret > 0) { if (list_missing) fprintf(stderr, "%s\n", name); missing++; }
+                else if (ret < 0) { status = 1; break; }
+            }
             free(line); if (nf != stdin) fclose(nf);
         }
     } else {
-        if (write_one_name(&idx, in, hdr, bgzf_fp, out, b, single_name, list_missing, &missing) != 0) status = 1;
+        int ret = bni_reader_fetch(reader, single_name, write_record_callback, &write_ctx, NULL);
+        if (ret > 0) { if (list_missing) fprintf(stderr, "%s\n", single_name); missing++; }
+        else if (ret < 0) status = 1;
     }
     if (sam_close(out) != 0) { bni_print_error("failed closing output"); status = 1; }
-    bam_destroy1(b); sam_hdr_destroy(hdr); sam_close(in); bni_index_destroy(&idx); free(default_index);
+    bni_reader_close(reader);
     if (status == 0 && missing > 0 && !missing_ok) { char mbuf[64]; bni_format_u64(mbuf, sizeof(mbuf), missing); bni_print_error("%s requested read name(s) were not found; use --missing-ok to ignore", mbuf); status = 1; }
     return status;
 }

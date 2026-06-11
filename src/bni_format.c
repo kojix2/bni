@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include "bni.h"
+#include "bni_internal.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -199,4 +199,23 @@ const bni_entry_t *bni_find_entry(const bni_index_t *idx, const char *name) {
         else return &idx->entries[mid];
     }
     return NULL;
+}
+
+bni_index_t *bni_index_open(const char *path) {
+    bni_index_t *idx = (bni_index_t *)calloc(1, sizeof(*idx));
+    if (idx == NULL) {
+        bni_print_error("out of memory while allocating index");
+        return NULL;
+    }
+    if (bni_load_index_file(path, idx) != 0) {
+        free(idx);
+        return NULL;
+    }
+    return idx;
+}
+
+void bni_index_close(bni_index_t *idx) {
+    if (idx == NULL) return;
+    bni_index_destroy(idx);
+    free(idx);
 }

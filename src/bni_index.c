@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include "bni.h"
+#include "bni_internal.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -121,66 +121,48 @@ static uint64_t header_hash64(sam_hdr_t *hdr) {
     return bni_fnv1a64(text, len);
 }
 
-int bni_cmd_index(int argc, char **argv) {
-    const char *out_path_arg = NULL;
-    int force = 0, threads = 0, no_header_check = 0, verbose = 0;
-    static const struct option long_opts[] = {
-        {"output", required_argument, NULL, 'o'}, {"force", no_argument, NULL, 'f'},
-        {"threads", required_argument, NULL, '@'}, {"no-header-check", no_argument, NULL, 1000},
-        {"verbose", no_argument, NULL, 'v'}, {"help", no_argument, NULL, 'h'}, {0,0,0,0}
-    };
-    optind = 1;
-    int c;
-    while ((c = getopt_long(argc, argv, "o:f@::vh", long_opts, NULL)) != -1) {
-        switch (c) {
-        case 'o': out_path_arg = optarg; break;
-        case 'f': force = 1; break;
-        case '@':
-            if (optarg == NULL) {
-                if (optind < argc && bni_parse_threads(argv[optind], &threads) == 0) { optind++; break; }
-                bni_print_error("missing or invalid argument for -@/--threads"); return 1;
-            }
-            if (bni_parse_threads(optarg, &threads) != 0) { bni_print_error("invalid thread count '%s'", optarg); return 1; }
-            break;
-        case 'v': verbose = 1; break;
-        case 1000: no_header_check = 1; break;
-        case 'h': usage_index(stdout); return 0;
-        default: usage_index(stderr); return 1;
-        }
+int bni_build_index(const char *bam_path, const char *index_path,
+                    const bni_build_options_t *opts, bni_build_stats_t *stats) {
+    int force = opts ? opts->force : 0;
+    int threads = opts ? opts->threads : 0;
+    int no_header_check = opts ? opts->no_header_check : 0;
+
+    if (stats) memset(stats, 0, sizeof(*stats));
+    if (bam_path == NULL || strcmp(bam_path, "-") == 0) {
+        bni_print_error("indexing from stdin is not supported because BNI stores BGZF virtual offsets");
+        return -1;
     }
-    if (argc - optind != 1) { usage_index(stderr); return 1; }
-    const char *bam_path = argv[optind];
-    if (strcmp(bam_path, "-") == 0) { bni_print_error("indexing from stdin is not supported because BNI stores BGZF virtual offsets"); return 1; }
+
     char *default_out = NULL;
-    const char *out_path = out_path_arg;
+    const char *out_path = index_path;
     if (out_path == NULL) {
         default_out = bni_default_index_path(bam_path);
-        if (default_out == NULL) { bni_print_error("out of memory while building output path"); return 1; }
+        if (default_out == NULL) { bni_print_error("out of memory while building output path"); return -1; }
         out_path = default_out;
     }
-    if (!force && bni_path_exists(out_path)) { bni_print_error("%s already exists; use --force to overwrite", out_path); free(default_out); return 1; }
+    if (!force && bni_path_exists(out_path)) { bni_print_error("%s already exists; use --force to overwrite", out_path); free(default_out); return -1; }
     uint64_t bam_size = 0; int64_t bam_mtime = 0;
-    if (bni_file_metadata(bam_path, &bam_size, &bam_mtime) != 0) { bni_print_error("could not stat %s: %s", bam_path, strerror(errno)); free(default_out); return 1; }
+    if (bni_file_metadata(bam_path, &bam_size, &bam_mtime) != 0) { bni_print_error("could not stat %s: %s", bam_path, strerror(errno)); free(default_out); return -1; }
 
     samFile *fp = sam_open(bam_path, "r");
-    if (fp == NULL) { bni_print_error("could not open %s", bam_path); free(default_out); return 1; }
+    if (fp == NULL) { bni_print_error("could not open %s", bam_path); free(default_out); return -1; }
     if (threads > 0 && hts_set_threads(fp, threads) != 0) bni_print_warning("failed to enable input threads");
     bam_hdr_t *hdr = sam_hdr_read(fp);
-    if (hdr == NULL) { bni_print_error("failed to read BAM header from %s", bam_path); sam_close(fp); free(default_out); return 1; }
+    if (hdr == NULL) { bni_print_error("failed to read BAM header from %s", bam_path); sam_close(fp); free(default_out); return -1; }
     const htsFormat *fmt = hts_get_format(fp);
-    if (fmt != NULL && fmt->format != bam) { bni_print_error("input is not BAM; BNI v1 supports BGZF-compressed BAM only"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return 1; }
-    if (fmt != NULL && fmt->compression != bgzf) { bni_print_error("input is not BGZF-compressed BAM; BNI v1 cannot seek it safely"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return 1; }
-    if (header_is_queryname_lex(hdr, no_header_check) != 0) { sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return 1; }
+    if (fmt != NULL && fmt->format != bam) { bni_print_error("input is not BAM; BNI v1 supports BGZF-compressed BAM only"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return -1; }
+    if (fmt != NULL && fmt->compression != bgzf) { bni_print_error("input is not BGZF-compressed BAM; BNI v1 cannot seek it safely"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return -1; }
+    if (header_is_queryname_lex(hdr, no_header_check) != 0) { sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return -1; }
     BGZF *bgzf_fp = hts_get_bgzfp(fp);
-    if (bgzf_fp == NULL) { bni_print_error("failed to access BGZF handle"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return 1; }
+    if (bgzf_fp == NULL) { bni_print_error("failed to access BGZF handle"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return -1; }
 
     entry_vec_t entries = {0,0,0}; strbuf_t strings = {0,0,0};
     bam1_t *b = bam_init1();
-    if (b == NULL) { bni_print_error("failed to allocate BAM record"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return 1; }
+    if (b == NULL) { bni_print_error("failed to allocate BAM record"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return -1; }
     char *prev_name = NULL;
     uint64_t group_beg = 0, total_records = 0, last_rec_end = 0;
     uint32_t group_n = 0;
-    int exit_status = 1;
+    int status = -1;
 
     for (;;) {
         int64_t tell_before = bgzf_tell(bgzf_fp);
@@ -241,17 +223,68 @@ int bni_cmd_index(int argc, char **argv) {
     header.sort_order = BNI_SORT_QUERYNAME_LEX;
     header.entry_size = BNI_ENTRY_SIZE;
     if (bni_write_index_file(out_path, &header, entries.data, strings.data ? strings.data : "") != 0) goto cleanup;
-    if (verbose) {
-        char nbuf[64], rbuf[64], sbuf[64];
-        bni_format_u64(nbuf, sizeof(nbuf), header.n_names);
-        bni_format_u64(rbuf, sizeof(rbuf), header.n_records);
-        bni_format_u64(sbuf, sizeof(sbuf), header.strings_size);
-        fprintf(stderr, "bni: wrote %s\n", out_path);
-        fprintf(stderr, "bni: names=%s records=%s string_bytes=%s\n", nbuf, rbuf, sbuf);
+    if (stats) {
+        stats->n_names = header.n_names;
+        stats->n_records = header.n_records;
+        stats->strings_size = header.strings_size;
     }
-    exit_status = 0;
+    status = 0;
 cleanup:
     free(prev_name); bam_destroy1(b); entry_vec_free(&entries); strbuf_free(&strings);
     sam_hdr_destroy(hdr); sam_close(fp); free(default_out);
-    return exit_status;
+    return status;
+}
+
+int bni_cmd_index(int argc, char **argv) {
+    const char *out_path_arg = NULL;
+    int force = 0, threads = 0, no_header_check = 0, verbose = 0;
+    static const struct option long_opts[] = {
+        {"output", required_argument, NULL, 'o'}, {"force", no_argument, NULL, 'f'},
+        {"threads", required_argument, NULL, '@'}, {"no-header-check", no_argument, NULL, 1000},
+        {"verbose", no_argument, NULL, 'v'}, {"help", no_argument, NULL, 'h'}, {0,0,0,0}
+    };
+    optind = 1;
+    int c;
+    while ((c = getopt_long(argc, argv, "o:f@::vh", long_opts, NULL)) != -1) {
+        switch (c) {
+        case 'o': out_path_arg = optarg; break;
+        case 'f': force = 1; break;
+        case '@':
+            if (optarg == NULL) {
+                if (optind < argc && bni_parse_threads(argv[optind], &threads) == 0) { optind++; break; }
+                bni_print_error("missing or invalid argument for -@/--threads"); return 1;
+            }
+            if (bni_parse_threads(optarg, &threads) != 0) { bni_print_error("invalid thread count '%s'", optarg); return 1; }
+            break;
+        case 'v': verbose = 1; break;
+        case 1000: no_header_check = 1; break;
+        case 'h': usage_index(stdout); return 0;
+        default: usage_index(stderr); return 1;
+        }
+    }
+    if (argc - optind != 1) { usage_index(stderr); return 1; }
+    const char *bam_path = argv[optind];
+    bni_build_options_t opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.force = force;
+    opts.threads = threads;
+    opts.no_header_check = no_header_check;
+    bni_build_stats_t stats;
+    if (bni_build_index(bam_path, out_path_arg, &opts, &stats) != 0) return 1;
+    if (verbose) {
+        char nbuf[64], rbuf[64], sbuf[64];
+        char *default_out = NULL;
+        const char *printed_out = out_path_arg;
+        if (printed_out == NULL) {
+            default_out = bni_default_index_path(bam_path);
+            printed_out = default_out ? default_out : "(default index path)";
+        }
+        bni_format_u64(nbuf, sizeof(nbuf), stats.n_names);
+        bni_format_u64(rbuf, sizeof(rbuf), stats.n_records);
+        bni_format_u64(sbuf, sizeof(sbuf), stats.strings_size);
+        fprintf(stderr, "bni: wrote %s\n", printed_out);
+        fprintf(stderr, "bni: names=%s records=%s string_bytes=%s\n", nbuf, rbuf, sbuf);
+        free(default_out);
+    }
+    return 0;
 }

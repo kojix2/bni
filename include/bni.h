@@ -4,6 +4,18 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include <htslib/sam.h>
+
+#if defined(_WIN32) && defined(BNI_BUILD_SHARED)
+#  define BNI_API __declspec(dllexport)
+#elif defined(_WIN32)
+#  define BNI_API __declspec(dllimport)
+#elif defined(__GNUC__) || defined(__clang__)
+#  define BNI_API __attribute__((visibility("default")))
+#else
+#  define BNI_API
+#endif
+
 #define BNI_VERSION_STRING "0.0.0"
 
 #define BNI_MAGIC0 'B'
@@ -48,27 +60,46 @@ typedef struct {
     char *strings;
 } bni_index_t;
 
-int bni_write_index_file(const char *path, const bni_file_header_t *header,
-                         const bni_entry_t *entries, const char *strings);
-int bni_load_index_file(const char *path, bni_index_t *idx);
-void bni_index_destroy(bni_index_t *idx);
-const char *bni_entry_name(const bni_index_t *idx, const bni_entry_t *entry);
-const bni_entry_t *bni_find_entry(const bni_index_t *idx, const char *name);
+typedef struct {
+    int threads;
+    int no_header_check;
+    int force;
+} bni_build_options_t;
 
-char *bni_default_index_path(const char *bam_path);
-uint64_t bni_fnv1a64(const void *data, size_t len);
-int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out);
-int bni_path_exists(const char *path);
-int bni_has_suffix(const char *s, const char *suffix);
-int bni_parse_threads(const char *s, int *out);
-char *bni_strdup(const char *s);
-void bni_print_error(const char *fmt, ...);
-void bni_print_warning(const char *fmt, ...);
-void bni_format_u64(char *buf, size_t buflen, uint64_t value);
+typedef struct {
+    uint64_t n_names;
+    uint64_t n_records;
+    uint64_t strings_size;
+} bni_build_stats_t;
 
-int bni_cmd_index(int argc, char **argv);
-int bni_cmd_get(int argc, char **argv);
-int bni_cmd_stats(int argc, char **argv);
-int bni_cmd_check(int argc, char **argv);
+typedef struct {
+    int threads;
+    int ignore_metadata;
+} bni_reader_options_t;
+
+typedef struct bni_reader_t bni_reader_t;
+typedef int (*bni_record_callback)(const bam1_t *record, const sam_hdr_t *header, void *user);
+
+BNI_API int bni_write_index_file(const char *path, const bni_file_header_t *header,
+                                 const bni_entry_t *entries, const char *strings);
+BNI_API int bni_load_index_file(const char *path, bni_index_t *idx);
+BNI_API void bni_index_destroy(bni_index_t *idx);
+BNI_API const char *bni_entry_name(const bni_index_t *idx, const bni_entry_t *entry);
+BNI_API const bni_entry_t *bni_find_entry(const bni_index_t *idx, const char *name);
+
+BNI_API bni_index_t *bni_index_open(const char *path);
+BNI_API void bni_index_close(bni_index_t *idx);
+
+BNI_API int bni_build_index(const char *bam_path, const char *index_path,
+                            const bni_build_options_t *opts, bni_build_stats_t *stats);
+
+BNI_API int bni_reader_open(const char *bam_path, const char *index_path,
+                            const bni_reader_options_t *opts, bni_reader_t **reader_out);
+BNI_API void bni_reader_close(bni_reader_t *reader);
+BNI_API const bni_index_t *bni_reader_index(const bni_reader_t *reader);
+BNI_API const sam_hdr_t *bni_reader_header(const bni_reader_t *reader);
+BNI_API int bni_reader_fetch(bni_reader_t *reader, const char *name,
+                             bni_record_callback callback, void *user,
+                             uint32_t *n_records_out);
 
 #endif

@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include "bni.h"
+#include "bni_internal.h"
 
 #include <getopt.h>
 #include <inttypes.h>

@@ -31,4 +31,11 @@ if [ "$count" -ne 2 ]; then
 fi
 "$BNI" stats "$tmp/in.name.bam" >/dev/null
 
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then
+  cc $(pkg-config --cflags htslib) -Iinclude tests/library_api.c libbni.a $(pkg-config --libs htslib) -o "$tmp/library_api"
+  "$tmp/library_api" "$tmp/in.name.bam" read1 2
+else
+  echo "library API smoke test skipped: pkg-config htslib not found" >&2
+fi
+
 echo "smoke test OK" >&2

@@ -44,6 +44,15 @@ With a system htslib available via `pkg-config`:
 make
 ```
 
+This builds the CLI plus libraries:
+
+```text
+bni
+libbni.a
+libbni.dylib    # macOS
+libbni.so       # Linux
+```
+
 With a local htslib source/build tree:
 
 ```sh
@@ -55,6 +64,8 @@ Install:
 ```sh
 make install PREFIX=$HOME/.local
 ```
+
+This installs `bni`, `include/bni.h`, and the static/shared libraries.
 
 ## Usage
 
@@ -106,6 +117,52 @@ Check BAM/index consistency:
 bni check reads.name.bam
 bni check --full reads.name.bam
 ```
+
+## Library API
+
+Include `bni.h` and link with `-lbni` plus the htslib linker flags.
+
+Build an index from C:
+
+```c
+#include <bni.h>
+
+int rc = bni_build_index("reads.name.bam", NULL, NULL, NULL);
+```
+
+Load a `.bni` directly and search the entry table:
+
+```c
+bni_index_t *idx = bni_index_open("reads.name.bam.bni");
+const bni_entry_t *entry = bni_find_entry(idx, "READ_ID");
+if (entry != NULL) {
+    /* entry->beg_voff, entry->end_voff, entry->n_records */
+}
+bni_index_close(idx);
+```
+
+Fetch BAM records by QNAME:
+
+```c
+static int on_record(const bam1_t *record, const sam_hdr_t *header, void *user) {
+    (void)header;
+    (void)user;
+    puts(bam_get_qname(record));
+    return 0;
+}
+
+bni_reader_t *reader = NULL;
+if (bni_reader_open("reads.name.bam", NULL, NULL, &reader) == 0) {
+    uint32_t n_records = 0;
+    int rc = bni_reader_fetch(reader, "READ_ID", on_record, NULL, &n_records);
+    if (rc == 1) {
+        /* not found */
+    }
+    bni_reader_close(reader);
+}
+```
+
+`bni_reader_fetch()` returns `0` when the name is found, `1` when it is absent, and `-1` on error. The callback receives a reused htslib `bam1_t`; copy it inside the callback if you need to keep it after the callback returns.
 
 ## Commands
 
