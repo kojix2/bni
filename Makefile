@@ -46,7 +46,13 @@ SHARED_LIB = libbni.so
 SHARED_LDFLAGS = -shared -Wl,-soname,$(SHARED_LIB)
 endif
 
-all: $(BIN) $(STATIC_LIB) $(SHARED_LIB)
+ifneq ($(filter -static,$(LDFLAGS)),)
+DEFAULT_LIBS = $(STATIC_LIB)
+else
+DEFAULT_LIBS = $(STATIC_LIB) $(SHARED_LIB)
+endif
+
+all: $(BIN) $(DEFAULT_LIBS)
 
 $(BIN): $(CLI_OBJ) $(LIB_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $(CLI_OBJ) $(LIB_OBJ) $(LDLIBS)
@@ -68,7 +74,7 @@ install: all
 	mkdir -p $(DESTDIR)$(LIBDIR)
 	mkdir -p $(DESTDIR)$(INCLUDEDIR)
 	cp $(BIN) $(DESTDIR)$(BINDIR)/$(BIN)
-	cp $(STATIC_LIB) $(SHARED_LIB) $(DESTDIR)$(LIBDIR)/
+	cp $(DEFAULT_LIBS) $(DESTDIR)$(LIBDIR)/
 	cp include/bni.h $(DESTDIR)$(INCLUDEDIR)/bni.h
 
 clean:
