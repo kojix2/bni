@@ -86,3 +86,8 @@ bni check --full reads.name.bam
 - The intended sort order is `samtools sort -N` / `queryname:lexicographical`.
 - CRAM input is not supported in BNIv1.
 - The implementation currently loads the full `.bni` into memory. The binary layout is mmap-friendly, but mmap is not yet implemented.
+
+## Acknowledgements
+
+`bni` is inspired by Jared Simpson's [`bri`](https://github.com/jts/bri), but
+targets queryname-sorted BAMs rather than coordinate-sorted BAMs.
