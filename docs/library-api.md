@@ -55,16 +55,24 @@ int rc = bni_build_index("reads.name.bam", "reads.name.bam.bni", &opts, &stats);
 
 ## Search an Index
 
-Load a `.bni` directly and search the entry table:
+Load a `.bni` directly and search the BGZF-block entry table:
 
 ```c
 bni_index_t *idx = bni_index_open("reads.name.bam.bni");
 const bni_entry_t *entry = bni_find_entry(idx, "READ_ID");
 if (entry != NULL) {
+    const char *first = bni_entry_first_name(idx, entry);
+    const char *last  = bni_entry_last_name(idx, entry);
+    /* candidate block: first <= possible READ_ID <= last */
     /* entry->beg_voff, entry->end_voff, entry->n_records */
 }
 bni_index_close(idx);
 ```
+
+`bni_find_entry()` returns the earliest entry whose `last_qname >= target`.
+The target may still be absent; the reader must scan forward and stop when
+`QNAME > target`. Usually you should use `bni_reader_fetch()` rather than
+interpreting entries directly.
 
 Use `bni_load_index_file()` and `bni_index_destroy()` if you want caller-owned storage:
 

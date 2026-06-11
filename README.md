@@ -1,32 +1,14 @@
 # bni
 
-[![CI](https://github.com/kojix2/bni/actions/workflows/ci.yml/badge.svg)](https://github.com/kojix2/bni/actions/workflows/ci.yml)
-[![Lines of Code](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2Fkojix2%2Fbni%2Flines)](https://tokei.kojix2.net/github/kojix2/bni)
-
-`bni` is a BAM Name Index for read-centric random access in BAM files sorted with:
-
-```sh
-samtools sort -N -o reads.name.bam reads.bam
-```
-
-It builds a sidecar index:
-
-```text
-reads.name.bam
-reads.name.bam.bni
-```
-
-The index maps each SAM `QNAME` to one contiguous BGZF virtual-offset range:
-
-```text
-QNAME -> beg_voff, end_voff, n_records
-```
-
-Unlike coordinate indexes such as `.bai` and `.csi`, `bni` answers "read name -> BAM offsets". This is useful for long-read work where all alignments for one molecule/read need to be fetched without scanning the whole BAM.
+`bni` builds and queries a read-name index for BAM files sorted with
+`samtools sort -N`.
 
 ## Status
 
-Prototype C implementation, format version `BNIv1`.
+- Prototype C implementation
+- File format: `BNIv2`
+- Input: BGZF-compressed BAM
+- Required sort order: `queryname:lexicographical`
 
 ## Requirements
 
@@ -48,7 +30,7 @@ With a local htslib source/build tree:
 make HTSLIB_DIR=/path/to/htslib
 ```
 
-This builds the CLI plus libraries:
+Build outputs:
 
 ```text
 bni
@@ -63,31 +45,58 @@ Install:
 make install PREFIX=$HOME/.local
 ```
 
-## Quick Start
+## Usage
 
 ```sh
 samtools sort -N -o reads.name.bam reads.bam
 bni index reads.name.bam
 bni get reads.name.bam 'READ_ID' > one_read.bam
+```
+
+Additional checks and metadata:
+
+```sh
 bni stats reads.name.bam
 bni check --full reads.name.bam
 ```
+
+Default index path:
+
+```text
+reads.name.bam.bni
+```
+
+## Format Summary
+
+BNIv2 stores one entry per BGZF block that contains BAM record starts.
+
+Each entry stores:
+
+```text
+first_qname
+last_qname
+beg_voff
+end_voff
+n_records
+```
+
+Lookup uses the first entry whose `last_qname >= target_qname`, seeks to
+`beg_voff`, and scans forward until the target QNAME is found and passed.
 
 ## Documentation
 
 - [CLI usage](docs/cli.md)
 - [Library API](docs/library-api.md)
-- [BNIv1 file format](docs/format.md)
+- [BNIv2 file format](docs/format.md)
 
 ## Limitations
 
 - Input is BAM only.
 - Input must be BGZF-compressed and seekable.
-- The intended sort order is `samtools sort -N` / `queryname:lexicographical`.
-- CRAM input is not supported in BNIv1.
-- The implementation currently loads the full `.bni` into memory. The binary layout is mmap-friendly, but mmap is not yet implemented.
+- Input must be sorted with `samtools sort -N`.
+- CRAM input is not supported in BNIv2.
+- The full `.bni` file is currently loaded into memory.
 
 ## Acknowledgements
 
-`bni` is inspired by Jared Simpson's [`bri`](https://github.com/jts/bri), but
-targets queryname-sorted BAMs rather than coordinate-sorted BAMs.
+`bni` is inspired by Jared Simpson's [`bri`](https://github.com/jts/bri).

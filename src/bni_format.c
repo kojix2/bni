@@ -47,7 +47,7 @@ static void encode_header(unsigned char out[BNI_HEADER_SIZE], const bni_file_hea
     put_u32le(out + 4, h->version);
     put_u32le(out + 8, h->header_size);
     put_u32le(out + 12, h->flags);
-    put_u64le(out + 16, h->n_names);
+    put_u64le(out + 16, h->n_blocks);
     put_u64le(out + 24, h->n_records);
     put_u64le(out + 32, h->entries_offset);
     put_u64le(out + 40, h->strings_offset);
@@ -65,7 +65,7 @@ static int decode_header(const unsigned char in[BNI_HEADER_SIZE], bni_file_heade
     h->version = get_u32le(in + 4);
     h->header_size = get_u32le(in + 8);
     h->flags = get_u32le(in + 12);
-    h->n_names = get_u64le(in + 16);
+    h->n_blocks = get_u64le(in + 16);
     h->n_records = get_u64le(in + 24);
     h->entries_offset = get_u64le(in + 32);
     h->strings_offset = get_u64le(in + 40);
@@ -80,29 +80,50 @@ static int decode_header(const unsigned char in[BNI_HEADER_SIZE], bni_file_heade
 
 static void encode_entry(unsigned char out[BNI_ENTRY_SIZE], const bni_entry_t *e) {
     memset(out, 0, BNI_ENTRY_SIZE);
-    put_u64le(out + 0, e->name_offset);
-    put_u64le(out + 8, e->beg_voff);
-    put_u64le(out + 16, e->end_voff);
-    put_u32le(out + 24, e->n_records);
-    put_u32le(out + 28, e->reserved);
+    put_u64le(out + 0, e->first_name_offset);
+    put_u64le(out + 8, e->last_name_offset);
+    put_u64le(out + 16, e->beg_voff);
+    put_u64le(out + 24, e->end_voff);
+    put_u32le(out + 32, e->n_records);
+    put_u32le(out + 36, e->reserved);
 }
 
 static void decode_entry(const unsigned char in[BNI_ENTRY_SIZE], bni_entry_t *e) {
-    e->name_offset = get_u64le(in + 0);
-    e->beg_voff = get_u64le(in + 8);
-    e->end_voff = get_u64le(in + 16);
-    e->n_records = get_u32le(in + 24);
-    e->reserved = get_u32le(in + 28);
+    e->first_name_offset = get_u64le(in + 0);
+    e->last_name_offset = get_u64le(in + 8);
+    e->beg_voff = get_u64le(in + 16);
+    e->end_voff = get_u64le(in + 24);
+    e->n_records = get_u32le(in + 32);
+    e->reserved = get_u32le(in + 36);
 }
 
 static int validate_header(const bni_file_header_t *h) {
     if (h->version != BNI_FORMAT_VERSION) { bni_print_error("unsupported BNI version %u", h->version); return -1; }
     if (h->header_size != BNI_HEADER_SIZE) { bni_print_error("unsupported BNI header size %u", h->header_size); return -1; }
     if (h->entry_size != BNI_ENTRY_SIZE) { bni_print_error("unsupported BNI entry size %u", h->entry_size); return -1; }
+    if ((h->flags & BNI_FLAG_BGZF_BLOCKS) == 0) { bni_print_error("unsupported BNI mode flags 0x%08x", h->flags); return -1; }
     if (h->entries_offset < BNI_HEADER_SIZE) { bni_print_error("invalid entries offset"); return -1; }
     if (h->strings_offset < h->entries_offset) { bni_print_error("invalid string-table offset"); return -1; }
-    if (h->n_names > (UINT64_MAX / BNI_ENTRY_SIZE)) { bni_print_error("invalid entry count"); return -1; }
+    if (h->n_blocks > (UINT64_MAX / BNI_ENTRY_SIZE)) { bni_print_error("invalid entry count"); return -1; }
+    uint64_t entry_bytes = h->n_blocks * (uint64_t)BNI_ENTRY_SIZE;
+    if (h->entries_offset > UINT64_MAX - entry_bytes || h->strings_offset < h->entries_offset + entry_bytes) {
+        bni_print_error("invalid entries/string-table layout"); return -1;
+    }
     return 0;
+}
+
+static const char *string_at_checked(const bni_index_t *idx, uint64_t off, uint64_t entry_i, const char *which) {
+    if (off >= idx->header.strings_size) {
+        bni_print_error("invalid %s name offset in entry %" PRIu64, which, entry_i);
+        return NULL;
+    }
+    const char *name = idx->strings + off;
+    size_t max_len = (size_t)(idx->header.strings_size - off);
+    if (memchr(name, '\0', max_len) == NULL) {
+        bni_print_error("unterminated %s name in entry %" PRIu64, which, entry_i);
+        return NULL;
+    }
+    return name;
 }
 
 int bni_write_index_file(const char *path, const bni_file_header_t *header,
@@ -113,7 +134,7 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
     encode_header(hbuf, header);
     if (write_exact(fp, hbuf, sizeof(hbuf)) != 0) { bni_print_error("failed writing BNI header to %s", path); fclose(fp); return -1; }
     unsigned char ebuf[BNI_ENTRY_SIZE];
-    for (uint64_t i = 0; i < header->n_names; ++i) {
+    for (uint64_t i = 0; i < header->n_blocks; ++i) {
         encode_entry(ebuf, &entries[i]);
         if (write_exact(fp, ebuf, sizeof(ebuf)) != 0) { bni_print_error("failed writing BNI entries to %s", path); fclose(fp); return -1; }
     }
@@ -131,21 +152,21 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
     unsigned char hbuf[BNI_HEADER_SIZE];
     if (read_exact(fp, hbuf, sizeof(hbuf)) != 0) { bni_print_error("failed reading BNI header from %s", path); fclose(fp); return -1; }
     if (decode_header(hbuf, &idx->header) != 0 || validate_header(&idx->header) != 0) {
-        bni_print_error("%s is not a valid BNI v1 index", path); fclose(fp); return -1;
+        bni_print_error("%s is not a valid BNI v2 BGZF-block index", path); fclose(fp); return -1;
     }
-    uint64_t entry_bytes_u64 = idx->header.n_names * (uint64_t)BNI_ENTRY_SIZE;
+    uint64_t entry_bytes_u64 = idx->header.n_blocks * (uint64_t)BNI_ENTRY_SIZE;
     if (entry_bytes_u64 > SIZE_MAX || idx->header.strings_size > SIZE_MAX - 1) {
         bni_print_error("index is too large for this platform"); fclose(fp); return -1;
     }
-    if (idx->header.n_names > 0) {
-        idx->entries = (bni_entry_t *)calloc((size_t)idx->header.n_names, sizeof(bni_entry_t));
+    if (idx->header.n_blocks > 0) {
+        idx->entries = (bni_entry_t *)calloc((size_t)idx->header.n_blocks, sizeof(bni_entry_t));
         if (idx->entries == NULL) { bni_print_error("out of memory while loading entries"); fclose(fp); return -1; }
     }
     if (fseeko(fp, (off_t)idx->header.entries_offset, SEEK_SET) != 0) {
         bni_print_error("failed seeking to entries in %s", path); bni_index_destroy(idx); fclose(fp); return -1;
     }
     unsigned char ebuf[BNI_ENTRY_SIZE];
-    for (uint64_t i = 0; i < idx->header.n_names; ++i) {
+    for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
         if (read_exact(fp, ebuf, sizeof(ebuf)) != 0) { bni_print_error("failed reading entry from %s", path); bni_index_destroy(idx); fclose(fp); return -1; }
         decode_entry(ebuf, &idx->entries[i]);
     }
@@ -159,15 +180,21 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
             bni_print_error("failed reading string table from %s", path); bni_index_destroy(idx); fclose(fp); return -1;
         }
     }
-    for (uint64_t i = 0; i < idx->header.n_names; ++i) {
+    for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
         const bni_entry_t *e = &idx->entries[i];
-        if (e->name_offset >= idx->header.strings_size) { bni_print_error("invalid name offset in entry %" PRIu64, i); bni_index_destroy(idx); fclose(fp); return -1; }
-        const char *name = idx->strings + e->name_offset;
-        size_t max_len = (size_t)(idx->header.strings_size - e->name_offset);
-        if (memchr(name, '\0', max_len) == NULL) { bni_print_error("unterminated name in entry %" PRIu64, i); bni_index_destroy(idx); fclose(fp); return -1; }
+        const char *first = string_at_checked(idx, e->first_name_offset, i, "first");
+        const char *last = string_at_checked(idx, e->last_name_offset, i, "last");
+        if (first == NULL || last == NULL) { bni_index_destroy(idx); fclose(fp); return -1; }
+        if (strcmp(first, last) > 0) { bni_print_error("entry %" PRIu64 " has first QNAME greater than last QNAME", i); bni_index_destroy(idx); fclose(fp); return -1; }
+        if (e->beg_voff >= e->end_voff) { bni_print_error("entry %" PRIu64 " has an empty virtual-offset range", i); bni_index_destroy(idx); fclose(fp); return -1; }
+        if (e->n_records == 0) { bni_print_error("entry %" PRIu64 " has zero records", i); bni_index_destroy(idx); fclose(fp); return -1; }
         if (i > 0) {
-            const char *prev = bni_entry_name(idx, &idx->entries[i - 1]);
-            if (strcmp(prev, name) >= 0) { bni_print_error("entries are not strictly sorted by QNAME"); bni_index_destroy(idx); fclose(fp); return -1; }
+            const bni_entry_t *prev_e = &idx->entries[i - 1];
+            const char *prev_first = bni_entry_first_name(idx, prev_e);
+            const char *prev_last = bni_entry_last_name(idx, prev_e);
+            if (strcmp(prev_first, first) > 0) { bni_print_error("entries are not sorted by first QNAME"); bni_index_destroy(idx); fclose(fp); return -1; }
+            if (strcmp(prev_last, last) > 0) { bni_print_error("entries are not sorted by last QNAME"); bni_index_destroy(idx); fclose(fp); return -1; }
+            if (prev_e->end_voff > e->beg_voff) { bni_print_error("entries have overlapping virtual-offset ranges"); bni_index_destroy(idx); fclose(fp); return -1; }
         }
     }
     fclose(fp);
@@ -181,24 +208,16 @@ void bni_index_destroy(bni_index_t *idx) {
     memset(idx, 0, sizeof(*idx));
 }
 
-const char *bni_entry_name(const bni_index_t *idx, const bni_entry_t *entry) {
+const char *bni_entry_first_name(const bni_index_t *idx, const bni_entry_t *entry) {
     if (idx == NULL || entry == NULL || idx->strings == NULL) return NULL;
-    if (entry->name_offset >= idx->header.strings_size) return NULL;
-    return idx->strings + entry->name_offset;
+    if (entry->first_name_offset >= idx->header.strings_size) return NULL;
+    return idx->strings + entry->first_name_offset;
 }
 
-const bni_entry_t *bni_find_entry(const bni_index_t *idx, const char *name) {
-    if (idx == NULL || name == NULL) return NULL;
-    uint64_t lo = 0, hi = idx->header.n_names;
-    while (lo < hi) {
-        uint64_t mid = lo + (hi - lo) / 2;
-        const char *mid_name = bni_entry_name(idx, &idx->entries[mid]);
-        int cmp = strcmp(mid_name, name);
-        if (cmp < 0) lo = mid + 1;
-        else if (cmp > 0) hi = mid;
-        else return &idx->entries[mid];
-    }
-    return NULL;
+const char *bni_entry_last_name(const bni_index_t *idx, const bni_entry_t *entry) {
+    if (idx == NULL || entry == NULL || idx->strings == NULL) return NULL;
+    if (entry->last_name_offset >= idx->header.strings_size) return NULL;
+    return idx->strings + entry->last_name_offset;
 }
 
 bni_index_t *bni_index_open(const char *path) {
@@ -218,4 +237,18 @@ void bni_index_close(bni_index_t *idx) {
     if (idx == NULL) return;
     bni_index_destroy(idx);
     free(idx);
+}
+
+const bni_entry_t *bni_find_entry(const bni_index_t *idx, const char *name) {
+    if (idx == NULL || name == NULL) return NULL;
+    uint64_t lo = 0, hi = idx->header.n_blocks;
+    while (lo < hi) {
+        uint64_t mid = lo + (hi - lo) / 2;
+        const char *mid_last = bni_entry_last_name(idx, &idx->entries[mid]);
+        int cmp = strcmp(mid_last, name);
+        if (cmp < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo == idx->header.n_blocks) return NULL;
+    return &idx->entries[lo];
 }

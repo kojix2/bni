@@ -122,7 +122,7 @@ int bni_reader_open(const char *bam_path, const char *index_path,
     reader->hdr = sam_hdr_read(reader->in);
     if (reader->hdr == NULL) { bni_print_error("failed to read BAM header from %s", bam_path); goto fail; }
     const htsFormat *fmt = hts_get_format(reader->in);
-    if (fmt != NULL && fmt->format != bam) { bni_print_error("input is not BAM; BNI v1 supports BGZF-compressed BAM only"); goto fail; }
+    if (fmt != NULL && fmt->format != bam) { bni_print_error("input is not BAM; bni supports BGZF-compressed BAM only"); goto fail; }
     if (!ignore_metadata && check_metadata(&reader->idx, bam_path, reader->hdr) != 0) goto fail;
     reader->bgzf_fp = hts_get_bgzfp(reader->in);
     if (reader->bgzf_fp == NULL) { bni_print_error("failed to access BGZF handle"); goto fail; }
@@ -161,22 +161,42 @@ int bni_reader_fetch(bni_reader_t *reader, const char *name,
                      uint32_t *n_records_out) {
     if (n_records_out) *n_records_out = 0;
     if (reader == NULL || name == NULL) return -1;
+
     const bni_entry_t *entry = bni_find_entry(&reader->idx, name);
     if (entry == NULL) return 1;
-    if (bgzf_seek(reader->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) { bni_print_error("bgzf_seek failed for QNAME '%s'", name); return -1; }
+
+    if (bgzf_seek(reader->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) {
+        bni_print_error("bgzf_seek failed for QNAME '%s'", name);
+        return -1;
+    }
+
     uint32_t seen = 0;
-    while (1) {
-        int64_t pos = bgzf_tell(reader->bgzf_fp);
-        if (pos < 0) { bni_print_error("bgzf_tell failed while reading QNAME '%s'", name); return -1; }
-        if ((uint64_t)pos >= entry->end_voff) break;
+    for (;;) {
         int ret = sam_read1(reader->in, reader->hdr, reader->record);
-        if (ret < 0) { bni_print_error("unexpected end of BAM while reading QNAME '%s'", name); return -1; }
+        if (ret < 0) {
+            if (ret < -1) {
+                bni_print_error("error while reading BAM while fetching QNAME '%s'", name);
+                return -1;
+            }
+            break;
+        }
         const char *qname = bam_get_qname(reader->record);
-        if (qname == NULL || strcmp(qname, name) != 0) { bni_print_error("index range for '%s' contains record with QNAME '%s'; rebuild the index", name, qname ? qname : "(null)"); return -1; }
+        if (qname == NULL) {
+            bni_print_error("encountered record with NULL QNAME while fetching '%s'", name);
+            return -1;
+        }
+        int cmp = strcmp(qname, name);
+        if (cmp < 0) continue;
+        if (cmp > 0) break;
         if (callback != NULL && callback(reader->record, reader->hdr, user) != 0) return -1;
+        if (seen == UINT32_MAX) {
+            bni_print_error("too many records matched QNAME '%s'", name);
+            return -1;
+        }
         seen++;
     }
-    if (seen != entry->n_records) { bni_print_error("index range for '%s' contained %u records; expected %u", name, seen, entry->n_records); return -1; }
+
+    if (seen == 0) return 1;
     if (n_records_out) *n_records_out = seen;
     return 0;
 }

@@ -21,7 +21,7 @@ static void usage_check(FILE *fp) {
         "Options:\n"
         "  -i, --index FILE       index file [default: <in.bam>.bni]\n"
         "      --quick            check metadata only [default]\n"
-        "      --full             also seek every indexed range and verify QNAME/count\n"
+        "      --full             seek every indexed BGZF-block range and verify boundaries/counts\n"
         "  -@, --threads INT      decompression threads\n"
         "  -h, --help             show this help\n");
 }
@@ -46,25 +46,38 @@ static int check_metadata(const bni_index_t *idx, const char *bam_path, sam_hdr_
 static int full_check(const bni_index_t *idx, samFile *in, sam_hdr_t *hdr, BGZF *bgzf_fp) {
     bam1_t *b = bam_init1();
     if (b == NULL) { bni_print_error("failed to allocate BAM record"); return -1; }
-    for (uint64_t i = 0; i < idx->header.n_names; ++i) {
+    for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
         const bni_entry_t *entry = &idx->entries[i];
-        const char *name = bni_entry_name(idx, entry);
-        if (name == NULL) { bni_print_error("entry %" PRIu64 " has invalid name", i); bam_destroy1(b); return -1; }
-        if (bgzf_seek(bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) { bni_print_error("bgzf_seek failed for entry %" PRIu64 " (%s)", i, name); bam_destroy1(b); return -1; }
-        uint32_t seen = 0;
-        while (1) {
+        const char *first = bni_entry_first_name(idx, entry);
+        const char *last = bni_entry_last_name(idx, entry);
+        if (first == NULL || last == NULL) { bni_print_error("entry %" PRIu64 " has invalid QNAME offsets", i); bam_destroy1(b); return -1; }
+        if (bgzf_seek(bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) { bni_print_error("bgzf_seek failed for entry %" PRIu64 " (%s..%s)", i, first, last); bam_destroy1(b); return -1; }
+        char *prev = NULL;
+        for (uint32_t j = 0; j < entry->n_records; ++j) {
             int64_t pos = bgzf_tell(bgzf_fp);
-            if (pos < 0) { bni_print_error("bgzf_tell failed for entry %" PRIu64 " (%s)", i, name); bam_destroy1(b); return -1; }
-            if ((uint64_t)pos >= entry->end_voff) break;
+            if (pos < 0) { bni_print_error("bgzf_tell failed for entry %" PRIu64 " (%s..%s)", i, first, last); free(prev); bam_destroy1(b); return -1; }
+            if ((uint64_t)pos >= entry->end_voff) { bni_print_error("entry %" PRIu64 " ended before %u records", i, entry->n_records); free(prev); bam_destroy1(b); return -1; }
             int ret = sam_read1(in, hdr, b);
-            if (ret < 0) { bni_print_error("unexpected EOF while checking entry %" PRIu64 " (%s)", i, name); bam_destroy1(b); return -1; }
+            if (ret < 0) { bni_print_error("unexpected EOF while checking entry %" PRIu64 " (%s..%s)", i, first, last); free(prev); bam_destroy1(b); return -1; }
             const char *qname = bam_get_qname(b);
-            if (qname == NULL || strcmp(qname, name) != 0) { bni_print_error("entry %" PRIu64 " expected QNAME '%s', saw '%s'", i, name, qname ? qname : "(null)"); bam_destroy1(b); return -1; }
-            seen++;
+            if (qname == NULL) { bni_print_error("entry %" PRIu64 " contains record with NULL QNAME", i); free(prev); bam_destroy1(b); return -1; }
+            if (j == 0 && strcmp(qname, first) != 0) { bni_print_error("entry %" PRIu64 " first QNAME mismatch: index='%s' BAM='%s'", i, first, qname); free(prev); bam_destroy1(b); return -1; }
+            if (j + 1 == entry->n_records && strcmp(qname, last) != 0) { bni_print_error("entry %" PRIu64 " last QNAME mismatch: index='%s' BAM='%s'", i, last, qname); free(prev); bam_destroy1(b); return -1; }
+            if (prev != NULL && strcmp(prev, qname) > 0) { bni_print_error("BAM QNAME order decreases inside entry %" PRIu64 " near '%s' -> '%s'", i, prev, qname); free(prev); bam_destroy1(b); return -1; }
+            free(prev);
+            prev = bni_strdup(qname);
+            if (prev == NULL) { bni_print_error("out of memory while checking entry %" PRIu64, i); bam_destroy1(b); return -1; }
         }
-        if (seen != entry->n_records) { bni_print_error("entry %" PRIu64 " (%s) expected %u records, saw %u", i, name, entry->n_records, seen); bam_destroy1(b); return -1; }
+        free(prev);
+        int64_t pos_after = bgzf_tell(bgzf_fp);
+        if (pos_after < 0) { bni_print_error("bgzf_tell failed after entry %" PRIu64, i); bam_destroy1(b); return -1; }
+        if ((uint64_t)pos_after != entry->end_voff) {
+            bni_print_error("entry %" PRIu64 " end_voff mismatch: index=%" PRIu64 " BAM=%" PRIu64, i, entry->end_voff, (uint64_t)pos_after);
+            bam_destroy1(b); return -1;
+        }
     }
-    bam_destroy1(b); return 0;
+    bam_destroy1(b);
+    return 0;
 }
 
 int bni_cmd_check(int argc, char **argv) {
@@ -81,7 +94,10 @@ int bni_cmd_check(int argc, char **argv) {
             }
             if (bni_parse_threads(optarg, &threads) != 0) { bni_print_error("invalid thread count '%s'", optarg); return 1; }
             break;
-        case 1000: do_full = 0; break; case 1001: do_full = 1; break; case 'h': usage_check(stdout); return 0; default: usage_check(stderr); return 1;
+        case 1000: do_full = 0; break;
+        case 1001: do_full = 1; break;
+        case 'h': usage_check(stdout); return 0;
+        default: usage_check(stderr); return 1;
         }
     }
     if (argc - optind != 1) { usage_check(stderr); return 1; }

@@ -16,25 +16,25 @@
 #  define BNI_API
 #endif
 
-#define BNI_VERSION_STRING "0.0.1"
+#define BNI_VERSION_STRING "0.0.2"
 
 #define BNI_MAGIC0 'B'
 #define BNI_MAGIC1 'N'
 #define BNI_MAGIC2 'I'
 #define BNI_MAGIC3 1
 
-#define BNI_FORMAT_VERSION 1u
+#define BNI_FORMAT_VERSION 2u
 #define BNI_HEADER_SIZE 128u
-#define BNI_ENTRY_SIZE 32u
+#define BNI_ENTRY_SIZE 40u
 
 #define BNI_SORT_QUERYNAME_LEX 1u
-#define BNI_FLAG_QUERYNAME_GROUPED 0x00000001u
+#define BNI_FLAG_BGZF_BLOCKS 0x00000001u
 
 typedef struct {
     uint32_t version;
     uint32_t header_size;
     uint32_t flags;
-    uint64_t n_names;
+    uint64_t n_blocks;
     uint64_t n_records;
     uint64_t entries_offset;
     uint64_t strings_offset;
@@ -47,7 +47,8 @@ typedef struct {
 } bni_file_header_t;
 
 typedef struct {
-    uint64_t name_offset;
+    uint64_t first_name_offset;
+    uint64_t last_name_offset;
     uint64_t beg_voff;
     uint64_t end_voff;
     uint32_t n_records;
@@ -67,7 +68,7 @@ typedef struct {
 } bni_build_options_t;
 
 typedef struct {
-    uint64_t n_names;
+    uint64_t n_blocks;
     uint64_t n_records;
     uint64_t strings_size;
 } bni_build_stats_t;
@@ -84,7 +85,8 @@ BNI_API int bni_write_index_file(const char *path, const bni_file_header_t *head
                                  const bni_entry_t *entries, const char *strings);
 BNI_API int bni_load_index_file(const char *path, bni_index_t *idx);
 BNI_API void bni_index_destroy(bni_index_t *idx);
-BNI_API const char *bni_entry_name(const bni_index_t *idx, const bni_entry_t *entry);
+BNI_API const char *bni_entry_first_name(const bni_index_t *idx, const bni_entry_t *entry);
+BNI_API const char *bni_entry_last_name(const bni_index_t *idx, const bni_entry_t *entry);
 BNI_API const bni_entry_t *bni_find_entry(const bni_index_t *idx, const char *name);
 
 BNI_API bni_index_t *bni_index_open(const char *path);

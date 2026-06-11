@@ -20,6 +20,9 @@ This writes:
 reads.name.bam.bni
 ```
 
+BNIv2 stores one entry per BGZF block that contains BAM record starts. Each
+entry remembers the first and last QNAME in that block-like range.
+
 ## Extract Records
 
 Extract one read name as BAM:
@@ -74,7 +77,10 @@ By default, `bni index` expects:
 @HD SO:queryname SS:queryname:lexicographical
 ```
 
-If `SS` is absent, `bni` still validates actual lexicographic `QNAME` order while indexing. If the BAM is naturally queryname-sorted with `samtools sort -n`, indexing will normally fail when a natural-order pair disagrees with `strcmp` order. This is deliberate: `bni` is a `samtools sort -N`-oriented index.
+If `SS` is absent, `bni` still validates actual lexicographic `QNAME` order
+while indexing. If the BAM is naturally queryname-sorted with `samtools sort -n`,
+indexing will normally fail when a natural-order pair disagrees with `strcmp`
+order. This is deliberate: `bni` is a `samtools sort -N`-oriented index.
 
 ## `bni get`
 
@@ -117,7 +123,7 @@ Usage:
 Options:
   -i, --index FILE           index file [default: <in.bam>.bni]
       --quick                check metadata only [default]
-      --full                 also seek every indexed range and verify QNAME/count
+      --full                 seek every indexed BGZF-block range and verify boundaries/counts
   -@, --threads INT          decompression threads
   -h, --help                 show help
 ```

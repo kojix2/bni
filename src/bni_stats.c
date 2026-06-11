@@ -42,20 +42,21 @@ int bni_cmd_stats(int argc, char **argv) {
     if (index_path == NULL) { default_index = bni_default_index_path(bam_path); if (default_index == NULL) { bni_print_error("out of memory while building default index path"); return 1; } index_path = default_index; }
     bni_index_t idx;
     if (bni_load_index_file(index_path, &idx) != 0) { free(default_index); return 1; }
-    char names_buf[64], rec_buf[64], str_buf[64], bam_buf[64];
-    bni_format_u64(names_buf, sizeof(names_buf), idx.header.n_names);
+    char block_buf[64], rec_buf[64], str_buf[64], bam_buf[64];
+    bni_format_u64(block_buf, sizeof(block_buf), idx.header.n_blocks);
     bni_format_u64(rec_buf, sizeof(rec_buf), idx.header.n_records);
     bni_format_u64(str_buf, sizeof(str_buf), idx.header.strings_size);
     bni_format_u64(bam_buf, sizeof(bam_buf), idx.header.bam_size);
     printf("index: %s\n", index_path);
     printf("bam: %s\n", bam_path);
     printf("format: BNIv%u\n", idx.header.version);
-    printf("mode: queryname-grouped\n");
+    printf("mode: bgzf-block-name-ranges\n");
     printf("sort_order: queryname:lexicographical\n");
-    printf("names: %s\n", names_buf);
+    printf("blocks: %s\n", block_buf);
     printf("records: %s\n", rec_buf);
-    if (idx.header.n_names > 0) printf("avg_records_per_name: %.6f\n", (double)idx.header.n_records / (double)idx.header.n_names);
-    else printf("avg_records_per_name: 0\n");
+    if (idx.header.n_blocks > 0) printf("avg_records_per_block: %.6f\n", (double)idx.header.n_records / (double)idx.header.n_blocks);
+    else printf("avg_records_per_block: 0\n");
+    printf("entry_size: %u\n", idx.header.entry_size);
     printf("string_table_bytes: %s\n", str_buf);
     printf("bam_size: %s\n", bam_buf);
     print_mtime(idx.header.bam_mtime);
