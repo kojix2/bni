@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-static:
+    name: Build static Linux binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build static binary
+        run: |
+          docker run --rm \
+            -e HTSLIB_VERSION=1.23.1 \
+            -v "$PWD:/work" \
+            -w /work \
+            alpine:3.20 \
+            sh -euxc '
+              apk add --no-cache \
+                bash \
+                bzip2-static \
+                bzip2-dev \
+                ca-certificates \
+                coreutils \
+                curl \
+                file \
+                g++ \
+                libc-utils \
+                make \
+                tar \
+                xz-static \
+                xz-dev \
+                zlib-static \
+                zlib-dev
+
+              curl -fsSL "https://github.com/samtools/htslib/releases/download/${HTSLIB_VERSION}/htslib-${HTSLIB_VERSION}.tar.bz2" -o htslib.tar.bz2
+              tar -xjf htslib.tar.bz2
+              cd "htslib-${HTSLIB_VERSION}"
+              ./configure \
+                --prefix=/work/.htslib \
+                --disable-libcurl \
+                --disable-s3 \
+                --disable-gcs
+              make -j"$(nproc)" libhts.a
+              make install
+              cd /work
+
+              make clean
+              make \
+                CC=cc \
+                CPPFLAGS="-I/work/.htslib/include" \
+                LDFLAGS="-static -L/work/.htslib/lib" \
+                LDLIBS="/work/.htslib/lib/libhts.a -lz -lbz2 -llzma -lm -lpthread"
+            '
+
+      - name: Verify static binary
+        run: |
+          file ./bni
+          if ldd ./bni 2>&1 | grep -Eq "not a dynamic executable|statically linked"; then
+            echo "static link check OK"
+          else
+            echo "bni is dynamically linked" >&2
+            ldd ./bni >&2
+            exit 1
+          fi
+
+      - name: Run smoke test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends samtools
+          bash tests/smoke.sh ./bni
+
+      - name: Package binary
+        run: |
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="$(printf '%.12s' "${GITHUB_SHA:-manual}")"
+          fi
+          asset="bni-${version}-linux-x86_64"
+          mkdir -p "dist/${asset}"
+          cp bni LICENSE README.md "dist/${asset}/"
+          tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
+          sha256sum "dist/${asset}.tar.gz" > "dist/${asset}.tar.gz.sha256"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bni-linux-x86_64-static
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: linux-static
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
