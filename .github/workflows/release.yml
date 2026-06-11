@@ -106,7 +106,6 @@ jobs:
           mkdir -p "dist/${asset}"
           cp bni LICENSE README.md "dist/${asset}/"
           tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
-          sha256sum "dist/${asset}.tar.gz" > "dist/${asset}.tar.gz.sha256"
 
       - name: Package library
         run: |
@@ -126,7 +125,6 @@ jobs:
           provide htslib headers and link with htslib and its dependencies.
           EOF
           tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
-          sha256sum "dist/${asset}.tar.gz" > "dist/${asset}.tar.gz.sha256"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
@@ -134,7 +132,6 @@ jobs:
           name: bni-linux-x86_64
           path: |
             dist/*.tar.gz
-            dist/*.sha256
 
   macos-portable:
     name: Build portable macOS binary and library
@@ -208,7 +205,6 @@ jobs:
           mkdir -p "dist/${asset}"
           cp bni LICENSE README.md "dist/${asset}/"
           tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
-          shasum -a 256 "dist/${asset}.tar.gz" > "dist/${asset}.tar.gz.sha256"
 
       - name: Package library
         run: |
@@ -229,7 +225,6 @@ jobs:
           provide htslib headers and link with htslib and its dependencies.
           EOF
           tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
-          shasum -a 256 "dist/${asset}.tar.gz" > "dist/${asset}.tar.gz.sha256"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
@@ -237,7 +232,6 @@ jobs:
           name: bni-macos
           path: |
             dist/*.tar.gz
-            dist/*.sha256
 
   release:
     name: Publish GitHub Release
