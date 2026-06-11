@@ -203,7 +203,8 @@ jobs:
           else
             version="$(printf '%.12s' "${GITHUB_SHA:-manual}")"
           fi
-          asset="bni-${version}-macos-x86_64"
+          platform="macos-$(uname -m)"
+          asset="bni-${version}-${platform}"
           mkdir -p "dist/${asset}"
           cp bni LICENSE README.md "dist/${asset}/"
           tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
@@ -216,7 +217,8 @@ jobs:
           else
             version="$(printf '%.12s' "${GITHUB_SHA:-manual}")"
           fi
-          asset="libbni-${version}-macos-x86_64"
+          platform="macos-$(uname -m)"
+          asset="libbni-${version}-${platform}"
           mkdir -p "dist/${asset}/include" "dist/${asset}/lib" "dist/${asset}/docs"
           cp include/bni.h "dist/${asset}/include/"
           cp libbni.a "dist/${asset}/lib/"
@@ -232,7 +234,7 @@ jobs:
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
-          name: bni-macos-x86_64
+          name: bni-macos
           path: |
             dist/*.tar.gz
             dist/*.sha256
