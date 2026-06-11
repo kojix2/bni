@@ -1,0 +1,7 @@
+*.o
+bni
+*.bam
+*.bam.bni
+*.sam
+*.cram
+.DS_Store
