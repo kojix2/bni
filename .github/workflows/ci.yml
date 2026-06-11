@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: Build and smoke test (${{ matrix.os }}, ${{ matrix.cc }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+        cc:
+          - gcc
+          - clang
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies on Ubuntu
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libhts-dev \
+            pkg-config \
+            samtools
+
+      - name: Install dependencies on macOS
+        if: runner.os == 'macOS'
+        run: brew install htslib pkg-config samtools
+
+      - name: Build
+        run: make CC=${{ matrix.cc }}
+
+      - name: Run smoke test
+        run: bash tests/smoke.sh ./bni
+
+      - name: Clean
+        run: make clean
