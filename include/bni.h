@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define BNI_VERSION_STRING "0.1.0"
+#define BNI_VERSION_STRING "0.0.0"
 
 #define BNI_MAGIC0 'B'
 #define BNI_MAGIC1 'N'
