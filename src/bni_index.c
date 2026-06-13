@@ -376,12 +376,7 @@ static int process_index_record(index_scan_t *scan, const char *qname, uint64_t 
 }
 
 static int read_next_index_record(const build_input_t *input, bam1_t *record,
-                                  uint64_t *record_beg_voff, uint64_t *record_end_voff) {
-  int64_t tell_before = bgzf_tell(input->bgzf_fp);
-  if (tell_before < 0) {
-    bni_print_error("bgzf_tell failed before reading record");
-    return -1;
-  }
+                                  uint64_t *record_end_voff) {
   int ret = sam_read1(input->alignment, input->header, record);
   if (ret < 0) {
     if (ret < -1) {
@@ -395,7 +390,6 @@ static int read_next_index_record(const build_input_t *input, bam1_t *record,
     bni_print_error("bgzf_tell failed after reading record");
     return -1;
   }
-  *record_beg_voff = (uint64_t)tell_before;
   *record_end_voff = (uint64_t)tell_after;
   return 1;
 }
@@ -408,10 +402,16 @@ static int scan_bam_records(const build_input_t *input, index_scan_t *scan) {
   }
 
   int status = -1;
+  int64_t initial_voff = bgzf_tell(input->bgzf_fp);
+  if (initial_voff < 0) {
+    bni_print_error("bgzf_tell failed before reading first record");
+    goto done;
+  }
+  uint64_t next_record_beg_voff = (uint64_t)initial_voff;
   for (;;) {
-    uint64_t record_beg_voff = 0;
     uint64_t record_end_voff = 0;
-    int read_status = read_next_index_record(input, record, &record_beg_voff, &record_end_voff);
+    uint64_t record_beg_voff = next_record_beg_voff;
+    int read_status = read_next_index_record(input, record, &record_end_voff);
     if (read_status < 0) {
       goto done;
     }
@@ -422,6 +422,7 @@ static int scan_bam_records(const build_input_t *input, index_scan_t *scan) {
     if (process_index_record(scan, qname, record_beg_voff, record_end_voff) != 0) {
       goto done;
     }
+    next_record_beg_voff = record_end_voff;
   }
   if (scan->have_block && add_bgzf_block(&scan->entries, &scan->strings, scan->block_first.data,
                                          scan->previous_name.data, scan->block_beg_voff,
