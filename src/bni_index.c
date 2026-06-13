@@ -207,13 +207,267 @@ static int namebuf_set(namebuf_t *dst, const char *src) {
   return 0;
 }
 
+typedef struct {
+  samFile *alignment;
+  sam_hdr_t *header;
+  BGZF *bgzf_fp;
+} build_input_t;
+
+typedef struct {
+  entry_vec_t entries;
+  strbuf_t strings;
+  namebuf_t previous_name;
+  namebuf_t block_first;
+  uint64_t block_compressed_offset;
+  uint64_t block_beg_voff;
+  uint64_t total_records;
+  uint64_t last_record_end_voff;
+  uint32_t block_records;
+  int have_block;
+} index_scan_t;
+
+static int resolve_build_output_path(const char *bam_path, const char *index_path, int force,
+                                     char **default_out, const char **out_path) {
+  *default_out = NULL;
+  *out_path = index_path;
+  if (*out_path == NULL) {
+    *default_out = bni_default_index_path(bam_path);
+    if (*default_out == NULL) {
+      bni_print_error("out of memory while building output path");
+      return -1;
+    }
+    *out_path = *default_out;
+  }
+  if (!force && bni_path_exists(*out_path)) {
+    bni_print_error("%s already exists; use --force to overwrite", *out_path);
+    return -1;
+  }
+  return 0;
+}
+
+static int read_bam_metadata(const char *bam_path, uint64_t *bam_size, int64_t *bam_mtime) {
+  if (bni_file_metadata(bam_path, bam_size, bam_mtime) != 0) {
+    bni_print_error("could not stat %s: %s", bam_path, strerror(errno));
+    return -1;
+  }
+  return 0;
+}
+
+static int validate_build_input_format(samFile *alignment) {
+  const htsFormat *fmt = hts_get_format(alignment);
+  if (fmt != NULL && fmt->format != bam) {
+    bni_print_error("input is not BAM; bni supports BGZF-compressed BAM only");
+    return -1;
+  }
+  if (fmt != NULL && fmt->compression != bgzf) {
+    bni_print_error("input is not BGZF-compressed BAM; bni cannot seek it safely");
+    return -1;
+  }
+  return 0;
+}
+
+static int open_build_input(const char *bam_path, int threads, int no_header_check,
+                            build_input_t *input) {
+  input->alignment = sam_open(bam_path, "r");
+  if (input->alignment == NULL) {
+    bni_print_error("could not open %s", bam_path);
+    return -1;
+  }
+  if (threads > 0 && hts_set_threads(input->alignment, threads) != 0) {
+    bni_print_warning("failed to enable input threads");
+  }
+  input->header = sam_hdr_read(input->alignment);
+  if (input->header == NULL) {
+    bni_print_error("failed to read BAM header from %s", bam_path);
+    return -1;
+  }
+  if (validate_build_input_format(input->alignment) != 0) {
+    return -1;
+  }
+  if (header_is_queryname_lex(input->header, no_header_check) != 0) {
+    return -1;
+  }
+  input->bgzf_fp = hts_get_bgzfp(input->alignment);
+  if (input->bgzf_fp == NULL) {
+    bni_print_error("failed to access BGZF handle");
+    return -1;
+  }
+  return 0;
+}
+
+static void close_build_input(build_input_t *input) {
+  sam_hdr_destroy(input->header);
+  if (input->alignment != NULL) {
+    sam_close(input->alignment);
+  }
+}
+
+static void index_scan_destroy(index_scan_t *scan) {
+  namebuf_free(&scan->previous_name);
+  namebuf_free(&scan->block_first);
+  entry_vec_free(&scan->entries);
+  strbuf_free(&scan->strings);
+}
+
+static int check_qname_order(const index_scan_t *scan, const char *qname) {
+  if (scan->previous_name.data == NULL || strcmp(scan->previous_name.data, qname) <= 0) {
+    return 0;
+  }
+  bni_print_error(
+      "BAM is not lexicographically queryname-sorted near '%s' -> '%s'; use samtools sort -N",
+      scan->previous_name.data, qname);
+  return -1;
+}
+
+static int finish_scan_block(index_scan_t *scan, uint64_t end_voff) {
+  return add_bgzf_block(&scan->entries, &scan->strings, scan->block_first.data,
+                        scan->previous_name.data, scan->block_beg_voff, end_voff,
+                        scan->block_records);
+}
+
+static int start_scan_block(index_scan_t *scan, uint64_t record_beg_voff,
+                            uint64_t record_compressed_offset, const char *qname) {
+  scan->block_compressed_offset = record_compressed_offset;
+  scan->block_beg_voff = record_beg_voff;
+  if (namebuf_set(&scan->block_first, qname) != 0) {
+    return -1;
+  }
+  scan->block_records = 1;
+  scan->have_block = 1;
+  return 0;
+}
+
+static int update_scan_block(index_scan_t *scan, uint64_t record_beg_voff, const char *qname) {
+  uint64_t record_compressed_offset = record_beg_voff >> BGZF_BLOCK_OFFSET_SHIFT;
+  if (!scan->have_block) {
+    return start_scan_block(scan, record_beg_voff, record_compressed_offset, qname);
+  }
+  if (record_compressed_offset != scan->block_compressed_offset) {
+    if (finish_scan_block(scan, record_beg_voff) != 0) {
+      return -1;
+    }
+    return start_scan_block(scan, record_beg_voff, record_compressed_offset, qname);
+  }
+  if (scan->block_records == UINT32_MAX) {
+    bni_print_error("too many records starting in one BGZF block");
+    return -1;
+  }
+  scan->block_records++;
+  return 0;
+}
+
+static int process_index_record(index_scan_t *scan, const char *qname, uint64_t record_beg_voff,
+                                uint64_t record_end_voff) {
+  if (qname == NULL || qname[0] == '\0') {
+    bni_print_error("encountered record with empty QNAME");
+    return -1;
+  }
+  if (check_qname_order(scan, qname) != 0) {
+    return -1;
+  }
+  if (update_scan_block(scan, record_beg_voff, qname) != 0) {
+    return -1;
+  }
+  if (namebuf_set(&scan->previous_name, qname) != 0) {
+    return -1;
+  }
+  scan->last_record_end_voff = record_end_voff;
+  scan->total_records++;
+  return 0;
+}
+
+static int read_next_index_record(const build_input_t *input, bam1_t *record,
+                                  uint64_t *record_beg_voff, uint64_t *record_end_voff) {
+  int64_t tell_before = bgzf_tell(input->bgzf_fp);
+  if (tell_before < 0) {
+    bni_print_error("bgzf_tell failed before reading record");
+    return -1;
+  }
+  int ret = sam_read1(input->alignment, input->header, record);
+  if (ret < 0) {
+    if (ret < -1) {
+      bni_print_error("error while reading BAM records");
+      return -1;
+    }
+    return 0;
+  }
+  int64_t tell_after = bgzf_tell(input->bgzf_fp);
+  if (tell_after < 0) {
+    bni_print_error("bgzf_tell failed after reading record");
+    return -1;
+  }
+  *record_beg_voff = (uint64_t)tell_before;
+  *record_end_voff = (uint64_t)tell_after;
+  return 1;
+}
+
+static int scan_bam_records(const build_input_t *input, index_scan_t *scan) {
+  bam1_t *record = bam_init1();
+  if (record == NULL) {
+    bni_print_error("failed to allocate BAM record");
+    return -1;
+  }
+
+  int status = -1;
+  for (;;) {
+    uint64_t record_beg_voff = 0;
+    uint64_t record_end_voff = 0;
+    int read_status = read_next_index_record(input, record, &record_beg_voff, &record_end_voff);
+    if (read_status < 0) {
+      goto done;
+    }
+    if (read_status == 0) {
+      break;
+    }
+    const char *qname = bam_get_qname(record);
+    if (process_index_record(scan, qname, record_beg_voff, record_end_voff) != 0) {
+      goto done;
+    }
+  }
+  if (scan->have_block && finish_scan_block(scan, scan->last_record_end_voff) != 0) {
+    goto done;
+  }
+  status = 0;
+
+done:
+  bam_destroy1(record);
+  return status;
+}
+
+static void init_index_header(bni_file_header_t *header, const index_scan_t *scan,
+                              const build_input_t *input, uint64_t bam_size, int64_t bam_mtime) {
+  memset(header, 0, sizeof(*header));
+  header->version = BNI_FORMAT_VERSION;
+  header->header_size = BNI_HEADER_SIZE;
+  header->flags = BNI_FLAG_BGZF_BLOCKS;
+  header->n_blocks = (uint64_t)scan->entries.len;
+  header->n_records = scan->total_records;
+  header->entries_offset = BNI_HEADER_SIZE;
+  header->strings_offset =
+      BNI_HEADER_SIZE + ((uint64_t)scan->entries.len * (uint64_t)BNI_ENTRY_SIZE);
+  header->strings_size = (uint64_t)scan->strings.len;
+  header->bam_size = bam_size;
+  header->bam_mtime = bam_mtime;
+  header->header_hash = header_hash64(input->header);
+  header->sort_order = BNI_SORT_QUERYNAME_LEX;
+  header->entry_size = BNI_ENTRY_SIZE;
+}
+
+static void copy_build_stats(const bni_file_header_t *header, bni_build_stats_t *stats) {
+  if (stats != NULL) {
+    stats->n_blocks = header->n_blocks;
+    stats->n_records = header->n_records;
+    stats->strings_size = header->strings_size;
+  }
+}
+
 int bni_build_index(const char *bam_path, const char *index_path, const bni_build_options_t *opts,
                     bni_build_stats_t *stats) {
   int force = opts ? opts->force : 0;
   int threads = opts ? opts->threads : 0;
   int no_header_check = opts ? opts->no_header_check : 0;
 
-  if (stats) {
+  if (stats != NULL) {
     memset(stats, 0, sizeof(*stats));
   }
   if (bam_path == NULL || strcmp(bam_path, "-") == 0) {
@@ -222,207 +476,38 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   }
 
   char *default_out = NULL;
-  const char *out_path = index_path;
-  if (out_path == NULL) {
-    default_out = bni_default_index_path(bam_path);
-    if (default_out == NULL) {
-      bni_print_error("out of memory while building output path");
-      return -1;
-    }
-    out_path = default_out;
-  }
-  if (!force && bni_path_exists(out_path)) {
-    bni_print_error("%s already exists; use --force to overwrite", out_path);
-    free(default_out);
-    return -1;
-  }
+  const char *out_path = NULL;
   uint64_t bam_size = 0;
   int64_t bam_mtime = 0;
-  if (bni_file_metadata(bam_path, &bam_size, &bam_mtime) != 0) {
-    bni_print_error("could not stat %s: %s", bam_path, strerror(errno));
-    free(default_out);
-    return -1;
-  }
-
-  samFile *fp = sam_open(bam_path, "r");
-  if (fp == NULL) {
-    bni_print_error("could not open %s", bam_path);
-    free(default_out);
-    return -1;
-  }
-  if (threads > 0 && hts_set_threads(fp, threads) != 0) {
-    bni_print_warning("failed to enable input threads");
-  }
-  bam_hdr_t *hdr = sam_hdr_read(fp);
-  if (hdr == NULL) {
-    bni_print_error("failed to read BAM header from %s", bam_path);
-    sam_close(fp);
-    free(default_out);
-    return -1;
-  }
-  const htsFormat *fmt = hts_get_format(fp);
-  if (fmt != NULL && fmt->format != bam) {
-    bni_print_error("input is not BAM; bni supports BGZF-compressed BAM only");
-    sam_hdr_destroy(hdr);
-    sam_close(fp);
-    free(default_out);
-    return -1;
-  }
-  if (fmt != NULL && fmt->compression != bgzf) {
-    bni_print_error("input is not BGZF-compressed BAM; bni cannot seek it safely");
-    sam_hdr_destroy(hdr);
-    sam_close(fp);
-    free(default_out);
-    return -1;
-  }
-  if (header_is_queryname_lex(hdr, no_header_check) != 0) {
-    sam_hdr_destroy(hdr);
-    sam_close(fp);
-    free(default_out);
-    return -1;
-  }
-  BGZF *bgzf_fp = hts_get_bgzfp(fp);
-  if (bgzf_fp == NULL) {
-    bni_print_error("failed to access BGZF handle");
-    sam_hdr_destroy(hdr);
-    sam_close(fp);
-    free(default_out);
-    return -1;
-  }
-
-  entry_vec_t entries = {0, 0, 0};
-  strbuf_t strings = {0, 0, 0};
-  bam1_t *b = bam_init1();
-  if (b == NULL) {
-    bni_print_error("failed to allocate BAM record");
-    sam_hdr_destroy(hdr);
-    sam_close(fp);
-    free(default_out);
-    return -1;
-  }
-
-  namebuf_t prev_name = {0, 0};
-  namebuf_t block_first = {0, 0};
-  uint64_t block_coff = 0;
-  uint64_t block_beg = 0;
-  uint64_t total_records = 0;
-  uint64_t last_rec_end = 0;
-  uint32_t block_n = 0;
-  int have_block = 0;
+  build_input_t input = {0};
+  index_scan_t scan = {0};
   int status = -1;
 
-  for (;;) {
-    int64_t tell_before = bgzf_tell(bgzf_fp);
-    if (tell_before < 0) {
-      bni_print_error("bgzf_tell failed before reading record");
-      goto cleanup;
-    }
-    uint64_t rec_beg = (uint64_t)tell_before;
-    int ret = sam_read1(fp, hdr, b);
-    if (ret < 0) {
-      if (ret < -1) {
-        bni_print_error("error while reading BAM records");
-        goto cleanup;
-      }
-      break;
-    }
-    int64_t tell_after = bgzf_tell(bgzf_fp);
-    if (tell_after < 0) {
-      bni_print_error("bgzf_tell failed after reading record");
-      goto cleanup;
-    }
-    last_rec_end = (uint64_t)tell_after;
-    const char *qname = bam_get_qname(b);
-    if (qname == NULL || qname[0] == '\0') {
-      bni_print_error("encountered record with empty QNAME");
-      goto cleanup;
-    }
-
-    if (prev_name.data != NULL) {
-      int cmp = strcmp(prev_name.data, qname);
-      if (cmp > 0) {
-        bni_print_error(
-            "BAM is not lexicographically queryname-sorted near '%s' -> '%s'; use samtools sort -N",
-            prev_name.data, qname);
-        goto cleanup;
-      }
-    }
-
-    uint64_t rec_coff = rec_beg >> BGZF_BLOCK_OFFSET_SHIFT;
-    if (!have_block) {
-      block_coff = rec_coff;
-      block_beg = rec_beg;
-      if (namebuf_set(&block_first, qname) != 0) {
-        goto cleanup;
-      }
-      block_n = 1;
-      have_block = 1;
-    } else if (rec_coff != block_coff) {
-      if (add_bgzf_block(&entries, &strings, block_first.data, prev_name.data, block_beg, rec_beg,
-                         block_n) != 0) {
-        goto cleanup;
-      }
-      block_coff = rec_coff;
-      block_beg = rec_beg;
-      if (namebuf_set(&block_first, qname) != 0) {
-        goto cleanup;
-      }
-      block_n = 1;
-    } else {
-      if (block_n == UINT32_MAX) {
-        bni_print_error("too many records starting in one BGZF block");
-        goto cleanup;
-      }
-      block_n++;
-    }
-
-    if (namebuf_set(&prev_name, qname) != 0) {
-      goto cleanup;
-    }
-    total_records++;
+  if (resolve_build_output_path(bam_path, index_path, force, &default_out, &out_path) != 0) {
+    goto cleanup;
   }
-
-  if (have_block) {
-    if (add_bgzf_block(&entries, &strings, block_first.data, prev_name.data, block_beg,
-                       last_rec_end, block_n) != 0) {
-      goto cleanup;
-    }
+  if (read_bam_metadata(bam_path, &bam_size, &bam_mtime) != 0) {
+    goto cleanup;
+  }
+  if (open_build_input(bam_path, threads, no_header_check, &input) != 0) {
+    goto cleanup;
+  }
+  if (scan_bam_records(&input, &scan) != 0) {
+    goto cleanup;
   }
 
   bni_file_header_t header;
-  memset(&header, 0, sizeof(header));
-  header.version = BNI_FORMAT_VERSION;
-  header.header_size = BNI_HEADER_SIZE;
-  header.flags = BNI_FLAG_BGZF_BLOCKS;
-  header.n_blocks = (uint64_t)entries.len;
-  header.n_records = total_records;
-  header.entries_offset = BNI_HEADER_SIZE;
-  header.strings_offset = BNI_HEADER_SIZE + ((uint64_t)entries.len * (uint64_t)BNI_ENTRY_SIZE);
-  header.strings_size = (uint64_t)strings.len;
-  header.bam_size = bam_size;
-  header.bam_mtime = bam_mtime;
-  header.header_hash = header_hash64(hdr);
-  header.sort_order = BNI_SORT_QUERYNAME_LEX;
-  header.entry_size = BNI_ENTRY_SIZE;
-  if (bni_write_index_file(out_path, &header, entries.data, strings.data ? strings.data : "") !=
-      0) {
+  init_index_header(&header, &scan, &input, bam_size, bam_mtime);
+  const char *string_table = scan.strings.data ? scan.strings.data : "";
+  if (bni_write_index_file(out_path, &header, scan.entries.data, string_table) != 0) {
     goto cleanup;
   }
-  if (stats) {
-    stats->n_blocks = header.n_blocks;
-    stats->n_records = header.n_records;
-    stats->strings_size = header.strings_size;
-  }
+  copy_build_stats(&header, stats);
   status = 0;
 
 cleanup:
-  namebuf_free(&prev_name);
-  namebuf_free(&block_first);
-  bam_destroy1(b);
-  entry_vec_free(&entries);
-  strbuf_free(&strings);
-  sam_hdr_destroy(hdr);
-  sam_close(fp);
+  index_scan_destroy(&scan);
+  close_build_input(&input);
   free(default_out);
   return status;
 }
