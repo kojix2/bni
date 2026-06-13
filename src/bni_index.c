@@ -37,17 +37,18 @@ enum {
 };
 
 static void usage_index(FILE *fp) {
-  fprintf(fp, "Usage:\n"
-              "  bni index [options] <in.name.bam>\n\n"
-              "Create <in.name.bam>.bni for a BAM sorted with samtools sort -N.\n"
-              "BNIv2 stores one index entry per BGZF block that contains BAM record starts.\n\n"
-              "Options:\n"
-              "  -o, --output FILE          output index file [default: <in.bam>.bni]\n"
-              "  -f, --force                overwrite an existing index\n"
-              "  -@, --threads INT          decompression threads\n"
-              "      --no-header-check      do not require @HD SO/SS tags\n"
-              "  -v, --verbose              print progress summary\n"
-              "  -h, --help                 show this help\n");
+  (void)fprintf(fp,
+                "Usage:\n"
+                "  bni index [options] <in.name.bam>\n\n"
+                "Create <in.name.bam>.bni for a BAM sorted with samtools sort -N.\n"
+                "BNIv2 stores one index entry per BGZF block that contains BAM record starts.\n\n"
+                "Options:\n"
+                "  -o, --output FILE          output index file [default: <in.bam>.bni]\n"
+                "  -f, --force                overwrite an existing index\n"
+                "  -@, --threads INT          decompression threads\n"
+                "      --no-header-check      do not require @HD SO/SS tags\n"
+                "  -v, --verbose              print progress summary\n"
+                "  -h, --help                 show this help\n");
 }
 
 static void entry_vec_free(entry_vec_t *v) {
@@ -505,8 +506,8 @@ int bni_cmd_index(int argc, char **argv) {
     bni_format_u64(bbuf, sizeof(bbuf), stats.n_blocks);
     bni_format_u64(rbuf, sizeof(rbuf), stats.n_records);
     bni_format_u64(sbuf, sizeof(sbuf), stats.strings_size);
-    fprintf(stderr, "indexed %s: %s BGZF-block entries, %s records, %s string bytes -> %s\n",
-            bam_path, bbuf, rbuf, sbuf, printed_out);
+    (void)fprintf(stderr, "indexed %s: %s BGZF-block entries, %s records, %s string bytes -> %s\n",
+                  bam_path, bbuf, rbuf, sbuf, printed_out);
     free(default_out);
   }
   return 0;

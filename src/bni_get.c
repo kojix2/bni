@@ -26,8 +26,8 @@ enum {
 };
 
 static void usage_get(FILE *fp) {
-  fprintf(fp,
-          "Usage:\n"
+  (void)fprintf(
+      fp, "Usage:\n"
           "  bni get [options] <in.name.bam> <read-name>\n"
           "  bni get [options] -f names.txt <in.name.bam>\n\n"
           "Extract all BAM records for read names using <in.name.bam>.bni.\n\n"
@@ -403,7 +403,7 @@ static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t
     const bni_entry_t *entry = bni_find_entry(&reader->idx, trimmed);
     if (entry == NULL) {
       if (list_missing) {
-        fprintf(stderr, "%s\n", trimmed);
+        (void)fprintf(stderr, "%s\n", trimmed);
       }
       (*missing_out)++;
       continue;
@@ -472,7 +472,7 @@ static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *request
       while (target < group_end && strcmp(requests->data[target].name, qname) < 0) {
         if (!requests->data[target].found) {
           if (list_missing) {
-            fprintf(stderr, "%s\n", requests->data[target].name);
+            (void)fprintf(stderr, "%s\n", requests->data[target].name);
           }
           (*missing_out)++;
         }
@@ -492,7 +492,7 @@ static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *request
     while (target < group_end) {
       if (!requests->data[target].found) {
         if (list_missing) {
-          fprintf(stderr, "%s\n", requests->data[target].name);
+          (void)fprintf(stderr, "%s\n", requests->data[target].name);
         }
         (*missing_out)++;
       }
@@ -648,21 +648,20 @@ int bni_cmd_get(int argc, char **argv) {
         status = 1;
       }
       name_request_vec_destroy(&requests);
-      if (close_nf) {
-        fclose(nf);
+      if (close_nf && fclose(nf) != 0) {
+        bni_print_error("failed closing name file %s: %s", names_path, strerror(errno));
+        status = 1;
       }
     }
   } else {
     int ret = bni_reader_fetch(reader, single_name, write_record_callback, &write_ctx, NULL);
     if (ret > 0) {
       if (list_missing) {
-        fprintf(stderr, "%s\n", single_name);
+        (void)fprintf(stderr, "%s\n", single_name);
       }
       missing++;
     } else if (ret < 0) {
-      {
-        status = 1;
-      }
+      status = 1;
     }
   }
   if (sam_close(out) != 0) {

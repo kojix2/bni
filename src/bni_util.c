@@ -100,20 +100,20 @@ int bni_parse_threads(const char *s, int *out) {
 
 void bni_print_error(const char *fmt, ...) {
   va_list ap;
-  fprintf(stderr, "bni: error: ");
+  (void)fprintf(stderr, "bni: error: ");
   va_start(ap, fmt);
-  vfprintf(stderr, fmt, ap);
+  (void)vfprintf(stderr, fmt, ap);
   va_end(ap);
-  fputc('\n', stderr);
+  (void)fputc('\n', stderr);
 }
 
 void bni_print_warning(const char *fmt, ...) {
   va_list ap;
-  fprintf(stderr, "bni: warning: ");
+  (void)fprintf(stderr, "bni: warning: ");
   va_start(ap, fmt);
-  vfprintf(stderr, fmt, ap);
+  (void)vfprintf(stderr, fmt, ap);
   va_end(ap);
-  fputc('\n', stderr);
+  (void)fputc('\n', stderr);
 }
 
 void bni_format_u64(char *buf, size_t buflen, uint64_t value) {
@@ -124,7 +124,7 @@ void bni_format_u64(char *buf, size_t buflen, uint64_t value) {
     return;
   }
   if (value == 0) {
-    snprintf(buf, buflen, "0");
+    (void)snprintf(buf, buflen, "0");
     return;
   }
   while (value > 0 && pos < (int)sizeof(tmp) - 1) {

@@ -4,18 +4,18 @@
 #include <string.h>
 
 static void usage(FILE *fp) {
-  fprintf(fp,
-          "bni %s - BAM Name Index for queryname-sorted BAM files\n\n"
-          "Usage:\n"
-          "  bni <command> [options]\n\n"
-          "Commands:\n"
-          "  index     build a .bam.bni index for a samtools sort -N BAM\n"
-          "  get       extract records by read name\n"
-          "  stats     show BNI index metadata\n"
-          "  check     verify BAM/index consistency\n"
-          "  version   print version\n\n"
-          "Run 'bni <command> --help' for command-specific help.\n",
-          BNI_VERSION_STRING);
+  (void)fprintf(fp,
+                "bni %s - BAM Name Index for queryname-sorted BAM files\n\n"
+                "Usage:\n"
+                "  bni <command> [options]\n\n"
+                "Commands:\n"
+                "  index     build a .bam.bni index for a samtools sort -N BAM\n"
+                "  get       extract records by read name\n"
+                "  stats     show BNI index metadata\n"
+                "  check     verify BAM/index consistency\n"
+                "  version   print version\n\n"
+                "Run 'bni <command> --help' for command-specific help.\n",
+                BNI_VERSION_STRING);
 }
 
 int main(int argc, char **argv) {

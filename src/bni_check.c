@@ -18,7 +18,7 @@ enum {
 };
 
 static void usage_check(FILE *fp) {
-  fprintf(
+  (void)fprintf(
       fp,
       "Usage:\n"
       "  bni check [options] <in.name.bam>\n\n"

@@ -12,11 +12,11 @@ enum {
 };
 
 static void usage_stats(FILE *fp) {
-  fprintf(fp, "Usage:\n"
-              "  bni stats [options] <in.name.bam>\n\n"
-              "Options:\n"
-              "  -i, --index FILE       index file [default: <in.bam>.bni]\n"
-              "  -h, --help             show this help\n");
+  (void)fprintf(fp, "Usage:\n"
+                    "  bni stats [options] <in.name.bam>\n\n"
+                    "Options:\n"
+                    "  -i, --index FILE       index file [default: <in.bam>.bni]\n"
+                    "  -h, --help             show this help\n");
 }
 
 static void print_mtime(int64_t t) {
