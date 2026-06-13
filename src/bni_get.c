@@ -401,6 +401,12 @@ static int compare_name_requests(const void *a, const void *b) {
   return strcmp(ra->name, rb->name);
 }
 
+static int compare_name_requests_by_name(const void *a, const void *b) {
+  const name_request_t *request_a = (const name_request_t *)a;
+  const name_request_t *request_b = (const name_request_t *)b;
+  return strcmp(request_a->name, request_b->name);
+}
+
 static void dedupe_name_requests(name_request_vec_t *v) {
   if (v->len == 0) {
     return;
@@ -432,8 +438,7 @@ static void report_missing_request(name_request_t *request, int list_missing,
   (*missing_out)++;
 }
 
-static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t *requests,
-                              int list_missing, uint64_t *missing_out) {
+static int load_name_requests(FILE *nf, name_request_vec_t *requests) {
   char *line = NULL;
   size_t cap = 0;
   ssize_t nread;
@@ -445,23 +450,13 @@ static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t
       continue;
     }
 
-    const bni_entry_t *entry = bni_find_entry(&reader->idx, trimmed);
-    if (entry == NULL) {
-      if (list_missing) {
-        (void)fprintf(stderr, "%s\n", trimmed);
-      }
-      (*missing_out)++;
-      continue;
-    }
-
     char *name = bni_strdup(trimmed);
     if (name == NULL) {
       bni_print_error("out of memory while loading requested read names");
       status = -1;
       break;
     }
-    uint64_t entry_index = (uint64_t)(entry - reader->idx.entries);
-    if (name_request_vec_push(requests, name, entry_index) != 0) {
+    if (name_request_vec_push(requests, name, UINT64_MAX) != 0) {
       free(name);
       status = -1;
       break;
@@ -469,6 +464,48 @@ static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t
   }
   free(line);
   return status;
+}
+
+static int assign_name_request_entries(const bni_index_t *idx, name_request_vec_t *requests) {
+  if (requests->len == 0) {
+    return 0;
+  }
+  qsort(requests->data, requests->len, sizeof(*requests->data), compare_name_requests_by_name);
+
+  uint64_t entry_index = 0;
+  for (size_t request_index = 0; request_index < requests->len; ++request_index) {
+    const char *name = requests->data[request_index].name;
+    while (entry_index < idx->header.n_blocks) {
+      const char *last = bni_entry_last_name(idx, &idx->entries[entry_index]);
+      if (last == NULL) {
+        return -1;
+      }
+      if (strcmp(last, name) >= 0) {
+        break;
+      }
+      entry_index++;
+    }
+    requests->data[request_index].entry_index = entry_index;
+  }
+  return 0;
+}
+
+static void remove_missing_name_requests(name_request_vec_t *requests, int list_missing,
+                                         uint64_t *missing_out, uint64_t n_blocks) {
+  size_t out = 0;
+  for (size_t index = 0; index < requests->len; ++index) {
+    name_request_t *request = &requests->data[index];
+    if (request->entry_index == n_blocks) {
+      report_missing_request(request, list_missing, missing_out);
+      free(request->name);
+      continue;
+    }
+    if (out != index) {
+      requests->data[out] = *request;
+    }
+    out++;
+  }
+  requests->len = out;
 }
 
 static size_t name_request_group_end(const name_request_vec_t *requests, size_t group_beg) {
@@ -725,9 +762,16 @@ static int fetch_from_name_file(const get_options_t *options, bni_reader_t *read
 
   int status = 0;
   name_request_vec_t requests = {0, 0, 0};
-  if (load_name_requests(name_file, reader, &requests, options->list_missing, missing_out) != 0 ||
-      fetch_name_requests(reader, &requests, write_ctx, options->list_missing, missing_out) != 0) {
+  if (load_name_requests(name_file, &requests) != 0 ||
+      assign_name_request_entries(&reader->idx, &requests) != 0) {
     status = 1;
+  } else {
+    remove_missing_name_requests(&requests, options->list_missing, missing_out,
+                                 reader->idx.header.n_blocks);
+    if (fetch_name_requests(reader, &requests, write_ctx, options->list_missing, missing_out) !=
+        0) {
+      status = 1;
+    }
   }
   name_request_vec_destroy(&requests);
   if (close_name_file && fclose(name_file) != 0) {
