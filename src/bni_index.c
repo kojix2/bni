@@ -319,12 +319,6 @@ static int check_qname_order(const index_scan_t *scan, const char *qname) {
   return -1;
 }
 
-static int finish_scan_block(index_scan_t *scan, uint64_t end_voff) {
-  return add_bgzf_block(&scan->entries, &scan->strings, scan->block_first.data,
-                        scan->previous_name.data, scan->block_beg_voff, end_voff,
-                        scan->block_records);
-}
-
 static int start_scan_block(index_scan_t *scan, uint64_t record_beg_voff,
                             uint64_t record_compressed_offset, const char *qname) {
   scan->block_compressed_offset = record_compressed_offset;
@@ -343,9 +337,14 @@ static int update_scan_block(index_scan_t *scan, uint64_t record_beg_voff, const
     return start_scan_block(scan, record_beg_voff, record_compressed_offset, qname);
   }
   if (record_compressed_offset != scan->block_compressed_offset) {
-    if (finish_scan_block(scan, record_beg_voff) != 0) {
+    if (add_bgzf_block(&scan->entries, &scan->strings, scan->block_first.data,
+                       scan->previous_name.data, scan->block_beg_voff, record_beg_voff,
+                       scan->block_records) != 0) {
       return -1;
     }
+    free(scan->previous_name.data); // NOLINT(clang-analyzer-unix.Malloc)
+    scan->previous_name.data = NULL;
+    scan->previous_name.cap = 0;
     return start_scan_block(scan, record_beg_voff, record_compressed_offset, qname);
   }
   if (scan->block_records == UINT32_MAX) {
@@ -424,13 +423,18 @@ static int scan_bam_records(const build_input_t *input, index_scan_t *scan) {
       goto done;
     }
   }
-  if (scan->have_block && finish_scan_block(scan, scan->last_record_end_voff) != 0) {
+  if (scan->have_block && add_bgzf_block(&scan->entries, &scan->strings, scan->block_first.data,
+                                         scan->previous_name.data, scan->block_beg_voff,
+                                         scan->last_record_end_voff, scan->block_records) != 0) {
     goto done;
   }
   status = 0;
 
 done:
   bam_destroy1(record);
+  if (status != 0) {
+    index_scan_destroy(scan);
+  }
   return status;
 }
 
