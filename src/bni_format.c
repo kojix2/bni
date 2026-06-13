@@ -9,27 +9,56 @@
 
 #define BNI_ENTRY_WRITE_CHUNK 8192u
 
+enum {
+  BNI_BITS_PER_BYTE = 8,
+  BNI_U64_BYTES = 8,
+  BNI_U8_MASK = 0xffU,
+
+  BNI_HEADER_MAGIC_OFFSET = 0,
+  BNI_HEADER_VERSION_OFFSET = 4,
+  BNI_HEADER_SIZE_OFFSET = 8,
+  BNI_HEADER_FLAGS_OFFSET = 12,
+  BNI_HEADER_N_BLOCKS_OFFSET = 16,
+  BNI_HEADER_N_RECORDS_OFFSET = 24,
+  BNI_HEADER_ENTRIES_OFFSET_OFFSET = 32,
+  BNI_HEADER_STRINGS_OFFSET_OFFSET = 40,
+  BNI_HEADER_STRINGS_SIZE_OFFSET = 48,
+  BNI_HEADER_BAM_SIZE_OFFSET = 56,
+  BNI_HEADER_BAM_MTIME_OFFSET = 64,
+  BNI_HEADER_HASH_OFFSET = 72,
+  BNI_HEADER_SORT_ORDER_OFFSET = 80,
+  BNI_HEADER_ENTRY_SIZE_OFFSET = 84,
+
+  BNI_ENTRY_FIRST_NAME_OFFSET = 0,
+  BNI_ENTRY_LAST_NAME_OFFSET = 8,
+  BNI_ENTRY_BEG_VOFF_OFFSET = 16,
+  BNI_ENTRY_END_VOFF_OFFSET = 24,
+  BNI_ENTRY_N_RECORDS_OFFSET = 32,
+  BNI_ENTRY_RESERVED_OFFSET = 36,
+};
+
 static void put_u32le(unsigned char *p, uint32_t v) {
-  p[0] = (unsigned char)(v & 0xffU);
-  p[1] = (unsigned char)((v >> 8) & 0xffU);
-  p[2] = (unsigned char)((v >> 16) & 0xffU);
-  p[3] = (unsigned char)((v >> 24) & 0xffU);
+  p[0] = (unsigned char)(v & BNI_U8_MASK);
+  p[1] = (unsigned char)((v >> BNI_BITS_PER_BYTE) & BNI_U8_MASK);
+  p[2] = (unsigned char)((v >> (2 * BNI_BITS_PER_BYTE)) & BNI_U8_MASK);
+  p[3] = (unsigned char)((v >> (3 * BNI_BITS_PER_BYTE)) & BNI_U8_MASK);
 }
 
 static void put_u64le(unsigned char *p, uint64_t v) {
-  for (int i = 0; i < 8; ++i) {
-    p[i] = (unsigned char)((v >> (8 * i)) & 0xffU);
+  for (int i = 0; i < BNI_U64_BYTES; ++i) {
+    p[i] = (unsigned char)((v >> (BNI_BITS_PER_BYTE * i)) & BNI_U8_MASK);
   }
 }
 
 static uint32_t get_u32le(const unsigned char *p) {
-  return ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+  return ((uint32_t)p[0]) | ((uint32_t)p[1] << BNI_BITS_PER_BYTE) |
+         ((uint32_t)p[2] << (2 * BNI_BITS_PER_BYTE)) | ((uint32_t)p[3] << (3 * BNI_BITS_PER_BYTE));
 }
 
 static uint64_t get_u64le(const unsigned char *p) {
   uint64_t v = 0;
-  for (int i = 7; i >= 0; --i) {
-    v <<= 8;
+  for (int i = BNI_U64_BYTES - 1; i >= 0; --i) {
+    v <<= BNI_BITS_PER_BYTE;
     v |= (uint64_t)p[i];
   }
   return v;
@@ -45,63 +74,65 @@ static void close_ignoring_error(FILE *fp) { (void)fclose(fp); }
 
 static void encode_header(unsigned char out[BNI_HEADER_SIZE], const bni_file_header_t *h) {
   memset(out, 0, BNI_HEADER_SIZE);
-  out[0] = BNI_MAGIC0;
-  out[1] = BNI_MAGIC1;
-  out[2] = BNI_MAGIC2;
-  out[3] = BNI_MAGIC3;
-  put_u32le(out + 4, h->version);
-  put_u32le(out + 8, h->header_size);
-  put_u32le(out + 12, h->flags);
-  put_u64le(out + 16, h->n_blocks);
-  put_u64le(out + 24, h->n_records);
-  put_u64le(out + 32, h->entries_offset);
-  put_u64le(out + 40, h->strings_offset);
-  put_u64le(out + 48, h->strings_size);
-  put_u64le(out + 56, h->bam_size);
-  put_u64le(out + 64, (uint64_t)h->bam_mtime);
-  put_u64le(out + 72, h->header_hash);
-  put_u32le(out + 80, h->sort_order);
-  put_u32le(out + 84, h->entry_size);
+  out[BNI_HEADER_MAGIC_OFFSET] = BNI_MAGIC0;
+  out[BNI_HEADER_MAGIC_OFFSET + 1] = BNI_MAGIC1;
+  out[BNI_HEADER_MAGIC_OFFSET + 2] = BNI_MAGIC2;
+  out[BNI_HEADER_MAGIC_OFFSET + 3] = BNI_MAGIC3;
+  put_u32le(out + BNI_HEADER_VERSION_OFFSET, h->version);
+  put_u32le(out + BNI_HEADER_SIZE_OFFSET, h->header_size);
+  put_u32le(out + BNI_HEADER_FLAGS_OFFSET, h->flags);
+  put_u64le(out + BNI_HEADER_N_BLOCKS_OFFSET, h->n_blocks);
+  put_u64le(out + BNI_HEADER_N_RECORDS_OFFSET, h->n_records);
+  put_u64le(out + BNI_HEADER_ENTRIES_OFFSET_OFFSET, h->entries_offset);
+  put_u64le(out + BNI_HEADER_STRINGS_OFFSET_OFFSET, h->strings_offset);
+  put_u64le(out + BNI_HEADER_STRINGS_SIZE_OFFSET, h->strings_size);
+  put_u64le(out + BNI_HEADER_BAM_SIZE_OFFSET, h->bam_size);
+  put_u64le(out + BNI_HEADER_BAM_MTIME_OFFSET, (uint64_t)h->bam_mtime);
+  put_u64le(out + BNI_HEADER_HASH_OFFSET, h->header_hash);
+  put_u32le(out + BNI_HEADER_SORT_ORDER_OFFSET, h->sort_order);
+  put_u32le(out + BNI_HEADER_ENTRY_SIZE_OFFSET, h->entry_size);
 }
 
 static int decode_header(const unsigned char in[BNI_HEADER_SIZE], bni_file_header_t *h) {
-  if (in[0] != BNI_MAGIC0 || in[1] != BNI_MAGIC1 || in[2] != BNI_MAGIC2 || in[3] != BNI_MAGIC3) {
+  if (in[BNI_HEADER_MAGIC_OFFSET] != BNI_MAGIC0 || in[BNI_HEADER_MAGIC_OFFSET + 1] != BNI_MAGIC1 ||
+      in[BNI_HEADER_MAGIC_OFFSET + 2] != BNI_MAGIC2 ||
+      in[BNI_HEADER_MAGIC_OFFSET + 3] != BNI_MAGIC3) {
     return -1;
   }
   memset(h, 0, sizeof(*h));
-  h->version = get_u32le(in + 4);
-  h->header_size = get_u32le(in + 8);
-  h->flags = get_u32le(in + 12);
-  h->n_blocks = get_u64le(in + 16);
-  h->n_records = get_u64le(in + 24);
-  h->entries_offset = get_u64le(in + 32);
-  h->strings_offset = get_u64le(in + 40);
-  h->strings_size = get_u64le(in + 48);
-  h->bam_size = get_u64le(in + 56);
-  h->bam_mtime = (int64_t)get_u64le(in + 64);
-  h->header_hash = get_u64le(in + 72);
-  h->sort_order = get_u32le(in + 80);
-  h->entry_size = get_u32le(in + 84);
+  h->version = get_u32le(in + BNI_HEADER_VERSION_OFFSET);
+  h->header_size = get_u32le(in + BNI_HEADER_SIZE_OFFSET);
+  h->flags = get_u32le(in + BNI_HEADER_FLAGS_OFFSET);
+  h->n_blocks = get_u64le(in + BNI_HEADER_N_BLOCKS_OFFSET);
+  h->n_records = get_u64le(in + BNI_HEADER_N_RECORDS_OFFSET);
+  h->entries_offset = get_u64le(in + BNI_HEADER_ENTRIES_OFFSET_OFFSET);
+  h->strings_offset = get_u64le(in + BNI_HEADER_STRINGS_OFFSET_OFFSET);
+  h->strings_size = get_u64le(in + BNI_HEADER_STRINGS_SIZE_OFFSET);
+  h->bam_size = get_u64le(in + BNI_HEADER_BAM_SIZE_OFFSET);
+  h->bam_mtime = (int64_t)get_u64le(in + BNI_HEADER_BAM_MTIME_OFFSET);
+  h->header_hash = get_u64le(in + BNI_HEADER_HASH_OFFSET);
+  h->sort_order = get_u32le(in + BNI_HEADER_SORT_ORDER_OFFSET);
+  h->entry_size = get_u32le(in + BNI_HEADER_ENTRY_SIZE_OFFSET);
   return 0;
 }
 
 static void encode_entry(unsigned char out[BNI_ENTRY_SIZE], const bni_entry_t *e) {
   memset(out, 0, BNI_ENTRY_SIZE);
-  put_u64le(out + 0, e->first_name_offset);
-  put_u64le(out + 8, e->last_name_offset);
-  put_u64le(out + 16, e->beg_voff);
-  put_u64le(out + 24, e->end_voff);
-  put_u32le(out + 32, e->n_records);
-  put_u32le(out + 36, e->reserved);
+  put_u64le(out + BNI_ENTRY_FIRST_NAME_OFFSET, e->first_name_offset);
+  put_u64le(out + BNI_ENTRY_LAST_NAME_OFFSET, e->last_name_offset);
+  put_u64le(out + BNI_ENTRY_BEG_VOFF_OFFSET, e->beg_voff);
+  put_u64le(out + BNI_ENTRY_END_VOFF_OFFSET, e->end_voff);
+  put_u32le(out + BNI_ENTRY_N_RECORDS_OFFSET, e->n_records);
+  put_u32le(out + BNI_ENTRY_RESERVED_OFFSET, e->reserved);
 }
 
 static void decode_entry(const unsigned char in[BNI_ENTRY_SIZE], bni_entry_t *e) {
-  e->first_name_offset = get_u64le(in + 0);
-  e->last_name_offset = get_u64le(in + 8);
-  e->beg_voff = get_u64le(in + 16);
-  e->end_voff = get_u64le(in + 24);
-  e->n_records = get_u32le(in + 32);
-  e->reserved = get_u32le(in + 36);
+  e->first_name_offset = get_u64le(in + BNI_ENTRY_FIRST_NAME_OFFSET);
+  e->last_name_offset = get_u64le(in + BNI_ENTRY_LAST_NAME_OFFSET);
+  e->beg_voff = get_u64le(in + BNI_ENTRY_BEG_VOFF_OFFSET);
+  e->end_voff = get_u64le(in + BNI_ENTRY_END_VOFF_OFFSET);
+  e->n_records = get_u32le(in + BNI_ENTRY_N_RECORDS_OFFSET);
+  e->reserved = get_u32le(in + BNI_ENTRY_RESERVED_OFFSET);
 }
 
 static int validate_header(const bni_file_header_t *h) {
