@@ -29,6 +29,19 @@ if [ "$count" -ne 2 ]; then
   echo "expected 2 read1 records, got $count" >&2
   exit 1
 fi
+printf 'read2\nread1\nread1\n' > "$tmp/names.txt"
+"$BNI" get -O sam --no-header -f "$tmp/names.txt" "$tmp/in.name.bam" > "$tmp/many.sam"
+actual=$(cut -f1 "$tmp/many.sam" | tr '\n' ' ')
+if [ "$actual" != "read1 read1 read2 " ]; then
+  echo "unexpected batched name-file output order/counts: $actual" >&2
+  exit 1
+fi
+printf 'read11\n' > "$tmp/missing_names.txt"
+"$BNI" get -O sam --no-header --missing-ok --list-missing -f "$tmp/missing_names.txt" "$tmp/in.name.bam" > "$tmp/missing.sam" 2> "$tmp/missing.err"
+if ! grep -qx 'read11' "$tmp/missing.err"; then
+  echo "expected read11 to be reported missing" >&2
+  exit 1
+fi
 "$BNI" stats "$tmp/in.name.bam" >/dev/null
 
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then

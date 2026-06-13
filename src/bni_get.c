@@ -205,11 +205,175 @@ typedef struct {
     samFile *out;
 } write_context_t;
 
+typedef struct {
+    char *name;
+    uint64_t entry_index;
+    int found;
+} name_request_t;
+
+typedef struct {
+    name_request_t *data;
+    size_t len;
+    size_t cap;
+} name_request_vec_t;
+
 static int write_record_callback(const bam1_t *record, const sam_hdr_t *hdr, void *user) {
     write_context_t *ctx = (write_context_t *)user;
     if (sam_write1(ctx->out, hdr, record) < 0) {
         bni_print_error("failed writing output record");
         return -1;
+    }
+    return 0;
+}
+
+static void name_request_vec_destroy(name_request_vec_t *v) {
+    if (v == NULL) return;
+    for (size_t i = 0; i < v->len; ++i) free(v->data[i].name);
+    free(v->data);
+    v->data = NULL;
+    v->len = v->cap = 0;
+}
+
+static int name_request_vec_push(name_request_vec_t *v, char *name, uint64_t entry_index) {
+    if (v->len == v->cap) {
+        size_t new_cap = v->cap ? v->cap * 2 : 1024;
+        if (new_cap < v->cap || new_cap > SIZE_MAX / sizeof(name_request_t)) {
+            bni_print_error("too many requested read names for this platform");
+            return -1;
+        }
+        name_request_t *p = (name_request_t *)realloc(v->data, new_cap * sizeof(*v->data));
+        if (p == NULL) {
+            bni_print_error("out of memory while loading requested read names");
+            return -1;
+        }
+        v->data = p;
+        v->cap = new_cap;
+    }
+    v->data[v->len].name = name;
+    v->data[v->len].entry_index = entry_index;
+    v->data[v->len].found = 0;
+    v->len++;
+    return 0;
+}
+
+static int compare_name_requests(const void *a, const void *b) {
+    const name_request_t *ra = (const name_request_t *)a;
+    const name_request_t *rb = (const name_request_t *)b;
+    if (ra->entry_index < rb->entry_index) return -1;
+    if (ra->entry_index > rb->entry_index) return 1;
+    return strcmp(ra->name, rb->name);
+}
+
+static void dedupe_name_requests(name_request_vec_t *v) {
+    if (v->len == 0) return;
+    size_t out = 1;
+    for (size_t i = 1; i < v->len; ++i) {
+        name_request_t *prev = &v->data[out - 1];
+        name_request_t *cur = &v->data[i];
+        if (prev->entry_index == cur->entry_index && strcmp(prev->name, cur->name) == 0) {
+            free(cur->name);
+            continue;
+        }
+        if (out != i) v->data[out] = *cur;
+        out++;
+    }
+    v->len = out;
+}
+
+static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t *requests,
+                              int list_missing, uint64_t *missing_out) {
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t nread;
+    int status = 0;
+    while ((nread = getline(&line, &cap, nf)) >= 0) {
+        (void)nread;
+        char *trimmed = trim_line(line);
+        if (trimmed[0] == '\0') continue;
+
+        const bni_entry_t *entry = bni_find_entry(&reader->idx, trimmed);
+        if (entry == NULL) {
+            if (list_missing) fprintf(stderr, "%s\n", trimmed);
+            (*missing_out)++;
+            continue;
+        }
+
+        char *name = bni_strdup(trimmed);
+        if (name == NULL) {
+            bni_print_error("out of memory while loading requested read names");
+            status = -1;
+            break;
+        }
+        uint64_t entry_index = (uint64_t)(entry - reader->idx.entries);
+        if (name_request_vec_push(requests, name, entry_index) != 0) {
+            free(name);
+            status = -1;
+            break;
+        }
+    }
+    free(line);
+    return status;
+}
+
+static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *requests,
+                               write_context_t *write_ctx, int list_missing,
+                               uint64_t *missing_out) {
+    if (requests->len == 0) return 0;
+    qsort(requests->data, requests->len, sizeof(*requests->data), compare_name_requests);
+    dedupe_name_requests(requests);
+
+    size_t group_beg = 0;
+    while (group_beg < requests->len) {
+        uint64_t entry_index = requests->data[group_beg].entry_index;
+        size_t group_end = group_beg + 1;
+        while (group_end < requests->len && requests->data[group_end].entry_index == entry_index) group_end++;
+
+        const bni_entry_t *entry = &reader->idx.entries[entry_index];
+        if (bgzf_seek(reader->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) {
+            bni_print_error("bgzf_seek failed for indexed name batch");
+            return -1;
+        }
+
+        size_t target = group_beg;
+        const char *last_target = requests->data[group_end - 1].name;
+        for (;;) {
+            int ret = sam_read1(reader->in, reader->hdr, reader->record);
+            if (ret < 0) {
+                if (ret < -1) {
+                    bni_print_error("error while reading BAM while fetching requested names");
+                    return -1;
+                }
+                break;
+            }
+            const char *qname = bam_get_qname(reader->record);
+            if (qname == NULL) {
+                bni_print_error("encountered record with NULL QNAME while fetching requested names");
+                return -1;
+            }
+
+            if (strcmp(qname, last_target) > 0) break;
+            while (target < group_end && strcmp(requests->data[target].name, qname) < 0) {
+                if (!requests->data[target].found) {
+                    if (list_missing) fprintf(stderr, "%s\n", requests->data[target].name);
+                    (*missing_out)++;
+                }
+                target++;
+            }
+            if (target == group_end) break;
+            if (strcmp(qname, requests->data[target].name) == 0) {
+                requests->data[target].found = 1;
+                if (write_record_callback(reader->record, reader->hdr, write_ctx) != 0) return -1;
+            }
+        }
+
+        while (target < group_end) {
+            if (!requests->data[target].found) {
+                if (list_missing) fprintf(stderr, "%s\n", requests->data[target].name);
+                (*missing_out)++;
+            }
+            target++;
+        }
+        group_beg = group_end;
     }
     return 0;
 }
@@ -273,16 +437,11 @@ int bni_cmd_get(int argc, char **argv) {
         FILE *nf = strcmp(names_path, "-") == 0 ? stdin : fopen(names_path, "r");
         if (nf == NULL) { bni_print_error("could not open name file %s: %s", names_path, strerror(errno)); status = 1; }
         else {
-            char *line = NULL; size_t cap = 0; ssize_t nread;
-            while ((nread = getline(&line, &cap, nf)) >= 0) {
-                (void)nread;
-                char *name = trim_line(line);
-                if (name[0] == '\0') continue;
-                int ret = bni_reader_fetch(reader, name, write_record_callback, &write_ctx, NULL);
-                if (ret > 0) { if (list_missing) fprintf(stderr, "%s\n", name); missing++; }
-                else if (ret < 0) { status = 1; break; }
-            }
-            free(line); if (nf != stdin) fclose(nf);
+            name_request_vec_t requests = {0,0,0};
+            if (load_name_requests(nf, reader, &requests, list_missing, &missing) != 0) status = 1;
+            else if (fetch_name_requests(reader, &requests, &write_ctx, list_missing, &missing) != 0) status = 1;
+            name_request_vec_destroy(&requests);
+            if (nf != stdin) fclose(nf);
         }
     } else {
         int ret = bni_reader_fetch(reader, single_name, write_record_callback, &write_ctx, NULL);

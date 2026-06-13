@@ -43,6 +43,10 @@ Extract many names:
 bni get -f names.txt -o subset.bam reads.name.bam
 ```
 
+For name-file queries, `bni get` batches requested names by indexed BGZF block
+to reduce random seeks. Output records are emitted in BAM/index order, and
+duplicate requested names are fetched once.
+
 Show index metadata:
 
 ```sh
