@@ -1,19 +1,19 @@
 #ifndef BNI_H
 #define BNI_H
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <htslib/sam.h>
 
 #if defined(_WIN32) && defined(BNI_BUILD_SHARED)
-#  define BNI_API __declspec(dllexport)
+#define BNI_API __declspec(dllexport)
 #elif defined(_WIN32)
-#  define BNI_API __declspec(dllimport)
+#define BNI_API __declspec(dllimport)
 #elif defined(__GNUC__) || defined(__clang__)
-#  define BNI_API __attribute__((visibility("default")))
+#define BNI_API __attribute__((visibility("default")))
 #else
-#  define BNI_API
+#define BNI_API
 #endif
 
 #define BNI_VERSION_STRING "0.0.2"
@@ -31,51 +31,51 @@
 #define BNI_FLAG_BGZF_BLOCKS 0x00000001u
 
 typedef struct {
-    uint32_t version;
-    uint32_t header_size;
-    uint32_t flags;
-    uint64_t n_blocks;
-    uint64_t n_records;
-    uint64_t entries_offset;
-    uint64_t strings_offset;
-    uint64_t strings_size;
-    uint64_t bam_size;
-    int64_t  bam_mtime;
-    uint64_t header_hash;
-    uint32_t sort_order;
-    uint32_t entry_size;
+  uint32_t version;
+  uint32_t header_size;
+  uint32_t flags;
+  uint64_t n_blocks;
+  uint64_t n_records;
+  uint64_t entries_offset;
+  uint64_t strings_offset;
+  uint64_t strings_size;
+  uint64_t bam_size;
+  int64_t bam_mtime;
+  uint64_t header_hash;
+  uint32_t sort_order;
+  uint32_t entry_size;
 } bni_file_header_t;
 
 typedef struct {
-    uint64_t first_name_offset;
-    uint64_t last_name_offset;
-    uint64_t beg_voff;
-    uint64_t end_voff;
-    uint32_t n_records;
-    uint32_t reserved;
+  uint64_t first_name_offset;
+  uint64_t last_name_offset;
+  uint64_t beg_voff;
+  uint64_t end_voff;
+  uint32_t n_records;
+  uint32_t reserved;
 } bni_entry_t;
 
 typedef struct {
-    bni_file_header_t header;
-    bni_entry_t *entries;
-    char *strings;
+  bni_file_header_t header;
+  bni_entry_t *entries;
+  char *strings;
 } bni_index_t;
 
 typedef struct {
-    int threads;
-    int no_header_check;
-    int force;
+  int threads;
+  int no_header_check;
+  int force;
 } bni_build_options_t;
 
 typedef struct {
-    uint64_t n_blocks;
-    uint64_t n_records;
-    uint64_t strings_size;
+  uint64_t n_blocks;
+  uint64_t n_records;
+  uint64_t strings_size;
 } bni_build_stats_t;
 
 typedef struct {
-    int threads;
-    int ignore_metadata;
+  int threads;
+  int ignore_metadata;
 } bni_reader_options_t;
 
 typedef struct bni_reader_t bni_reader_t;
@@ -100,8 +100,7 @@ BNI_API int bni_reader_open(const char *bam_path, const char *index_path,
 BNI_API void bni_reader_close(bni_reader_t *reader);
 BNI_API const bni_index_t *bni_reader_index(const bni_reader_t *reader);
 BNI_API const sam_hdr_t *bni_reader_header(const bni_reader_t *reader);
-BNI_API int bni_reader_fetch(bni_reader_t *reader, const char *name,
-                             bni_record_callback callback, void *user,
-                             uint32_t *n_records_out);
+BNI_API int bni_reader_fetch(bni_reader_t *reader, const char *name, bni_record_callback callback,
+                             void *user, uint32_t *n_records_out);
 
 #endif
