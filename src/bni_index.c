@@ -17,6 +17,7 @@
 
 typedef struct { bni_entry_t *data; size_t len; size_t cap; } entry_vec_t;
 typedef struct { char *data; size_t len; size_t cap; } strbuf_t;
+typedef struct { char *data; size_t cap; } namebuf_t;
 
 static void usage_index(FILE *fp) {
     fprintf(fp,
@@ -35,6 +36,7 @@ static void usage_index(FILE *fp) {
 
 static void entry_vec_free(entry_vec_t *v) { free(v->data); v->data = NULL; v->len = v->cap = 0; }
 static void strbuf_free(strbuf_t *s) { free(s->data); s->data = NULL; s->len = s->cap = 0; }
+static void namebuf_free(namebuf_t *s) { free(s->data); s->data = NULL; s->cap = 0; }
 
 static int entry_vec_push(entry_vec_t *v, bni_entry_t e) {
     if (v->len == v->cap) {
@@ -129,11 +131,15 @@ static uint64_t header_hash64(sam_hdr_t *hdr) {
     return bni_fnv1a64(text, len);
 }
 
-static int replace_string(char **dst, const char *src) {
-    char *copy = bni_strdup(src);
-    if (copy == NULL) { bni_print_error("out of memory while storing QNAME"); return -1; }
-    free(*dst);
-    *dst = copy;
+static int namebuf_set(namebuf_t *dst, const char *src) {
+    size_t n = strlen(src) + 1;
+    if (n > dst->cap) {
+        char *copy = (char *)realloc(dst->data, n);
+        if (copy == NULL) { bni_print_error("out of memory while storing QNAME"); return -1; }
+        dst->data = copy;
+        dst->cap = n;
+    }
+    memcpy(dst->data, src, n);
     return 0;
 }
 
@@ -177,9 +183,8 @@ int bni_build_index(const char *bam_path, const char *index_path,
     bam1_t *b = bam_init1();
     if (b == NULL) { bni_print_error("failed to allocate BAM record"); sam_hdr_destroy(hdr); sam_close(fp); free(default_out); return -1; }
 
-    char *prev_name = NULL;
-    char *block_first = NULL;
-    char *block_last = NULL;
+    namebuf_t prev_name = {0,0};
+    namebuf_t block_first = {0,0};
     uint64_t block_coff = 0;
     uint64_t block_beg = 0;
     uint64_t total_records = 0;
@@ -200,38 +205,35 @@ int bni_build_index(const char *bam_path, const char *index_path,
         const char *qname = bam_get_qname(b);
         if (qname == NULL || qname[0] == '\0') { bni_print_error("encountered record with empty QNAME"); goto cleanup; }
 
-        if (prev_name != NULL) {
-            int cmp = strcmp(prev_name, qname);
-            if (cmp > 0) { bni_print_error("BAM is not lexicographically queryname-sorted near '%s' -> '%s'; use samtools sort -N", prev_name, qname); goto cleanup; }
+        if (prev_name.data != NULL) {
+            int cmp = strcmp(prev_name.data, qname);
+            if (cmp > 0) { bni_print_error("BAM is not lexicographically queryname-sorted near '%s' -> '%s'; use samtools sort -N", prev_name.data, qname); goto cleanup; }
         }
 
         uint64_t rec_coff = rec_beg >> 16;
         if (!have_block) {
             block_coff = rec_coff;
             block_beg = rec_beg;
-            if (replace_string(&block_first, qname) != 0) goto cleanup;
-            if (replace_string(&block_last, qname) != 0) goto cleanup;
+            if (namebuf_set(&block_first, qname) != 0) goto cleanup;
             block_n = 1;
             have_block = 1;
         } else if (rec_coff != block_coff) {
-            if (add_bgzf_block(&entries, &strings, block_first, block_last, block_beg, rec_beg, block_n) != 0) goto cleanup;
+            if (add_bgzf_block(&entries, &strings, block_first.data, prev_name.data, block_beg, rec_beg, block_n) != 0) goto cleanup;
             block_coff = rec_coff;
             block_beg = rec_beg;
-            if (replace_string(&block_first, qname) != 0) goto cleanup;
-            if (replace_string(&block_last, qname) != 0) goto cleanup;
+            if (namebuf_set(&block_first, qname) != 0) goto cleanup;
             block_n = 1;
         } else {
             if (block_n == UINT32_MAX) { bni_print_error("too many records starting in one BGZF block"); goto cleanup; }
-            if (replace_string(&block_last, qname) != 0) goto cleanup;
             block_n++;
         }
 
-        if (replace_string(&prev_name, qname) != 0) goto cleanup;
+        if (namebuf_set(&prev_name, qname) != 0) goto cleanup;
         total_records++;
     }
 
     if (have_block) {
-        if (add_bgzf_block(&entries, &strings, block_first, block_last, block_beg, last_rec_end, block_n) != 0) goto cleanup;
+        if (add_bgzf_block(&entries, &strings, block_first.data, prev_name.data, block_beg, last_rec_end, block_n) != 0) goto cleanup;
     }
 
     bni_file_header_t header; memset(&header, 0, sizeof(header));
@@ -257,9 +259,8 @@ int bni_build_index(const char *bam_path, const char *index_path,
     status = 0;
 
 cleanup:
-    free(prev_name);
-    free(block_first);
-    free(block_last);
+    namebuf_free(&prev_name);
+    namebuf_free(&block_first);
     bam_destroy1(b);
     entry_vec_free(&entries);
     strbuf_free(&strings);
