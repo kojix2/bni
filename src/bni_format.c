@@ -9,6 +9,8 @@
 #include <string.h>
 #include <sys/types.h>
 
+#define BNI_ENTRY_WRITE_CHUNK 8192u
+
 static void put_u32le(unsigned char *p, uint32_t v) {
     p[0] = (unsigned char)(v & 0xffu);
     p[1] = (unsigned char)((v >> 8) & 0xffu);
@@ -133,11 +135,26 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
     unsigned char hbuf[BNI_HEADER_SIZE];
     encode_header(hbuf, header);
     if (write_exact(fp, hbuf, sizeof(hbuf)) != 0) { bni_print_error("failed writing BNI header to %s", path); fclose(fp); return -1; }
-    unsigned char ebuf[BNI_ENTRY_SIZE];
-    for (uint64_t i = 0; i < header->n_blocks; ++i) {
-        encode_entry(ebuf, &entries[i]);
-        if (write_exact(fp, ebuf, sizeof(ebuf)) != 0) { bni_print_error("failed writing BNI entries to %s", path); fclose(fp); return -1; }
+    unsigned char *ebuf = NULL;
+    if (header->n_blocks > 0) {
+        ebuf = (unsigned char *)malloc((size_t)BNI_ENTRY_WRITE_CHUNK * (size_t)BNI_ENTRY_SIZE);
+        if (ebuf == NULL) { bni_print_error("out of memory while writing BNI entries"); fclose(fp); return -1; }
     }
+    for (uint64_t i = 0; i < header->n_blocks;) {
+        uint64_t remaining = header->n_blocks - i;
+        size_t n_entries = remaining < BNI_ENTRY_WRITE_CHUNK ? (size_t)remaining : (size_t)BNI_ENTRY_WRITE_CHUNK;
+        for (size_t j = 0; j < n_entries; ++j) {
+            encode_entry(ebuf + j * (size_t)BNI_ENTRY_SIZE, &entries[i + j]);
+        }
+        if (write_exact(fp, ebuf, n_entries * (size_t)BNI_ENTRY_SIZE) != 0) {
+            bni_print_error("failed writing BNI entries to %s", path);
+            free(ebuf);
+            fclose(fp);
+            return -1;
+        }
+        i += (uint64_t)n_entries;
+    }
+    free(ebuf);
     if (header->strings_size > 0 && write_exact(fp, strings, (size_t)header->strings_size) != 0) {
         bni_print_error("failed writing BNI string table to %s", path); fclose(fp); return -1;
     }
