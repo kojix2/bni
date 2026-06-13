@@ -19,15 +19,14 @@ enum {
 
 static void usage_check(FILE *fp) {
   (void)fprintf(
-      fp,
-      "Usage:\n"
-      "  bni check [options] <in.name.bam>\n\n"
-      "Options:\n"
-      "  -i, --index FILE       index file [default: <in.bam>.bni]\n"
-      "      --quick            check metadata only [default]\n"
-      "      --full             seek every indexed BGZF-block range and verify boundaries/counts\n"
-      "  -@, --threads INT      decompression threads\n"
-      "  -h, --help             show this help\n");
+      fp, "Usage:\n"
+          "  bni check [options] <in.name.bam>\n\n"
+          "Options:\n"
+          "  -i, --index FILE       index file [default: <in.bam>.bni]\n"
+          "      --quick            check metadata only [default]\n"
+          "      --full             scan indexed BGZF-block ranges and verify boundaries/counts\n"
+          "  -@, --threads INT      decompression threads\n"
+          "  -h, --help             show this help\n");
 }
 
 static uint64_t header_hash64(sam_hdr_t *hdr) {
@@ -96,6 +95,21 @@ static int check_record_position(const full_check_ctx_t *ctx, const bni_entry_t 
   }
   if ((uint64_t)pos >= entry->end_voff) {
     bni_print_error("entry %" PRIu64 " ended before %u records", entry_index, entry->n_records);
+    return -1;
+  }
+  return 0;
+}
+
+static int check_entry_start(const full_check_ctx_t *ctx, const bni_entry_t *entry,
+                             uint64_t entry_index, const char *first, const char *last) {
+  int64_t pos = bgzf_tell(ctx->bgzf_fp);
+  if (pos < 0) {
+    bni_print_error("bgzf_tell failed before entry %" PRIu64 " (%s..%s)", entry_index, first, last);
+    return -1;
+  }
+  if ((uint64_t)pos != entry->beg_voff) {
+    bni_print_error("entry %" PRIu64 " beg_voff mismatch: index=%" PRIu64 " BAM=%" PRIu64,
+                    entry_index, entry->beg_voff, (uint64_t)pos);
     return -1;
   }
   return 0;
@@ -179,8 +193,7 @@ static int check_index_entry(const full_check_ctx_t *ctx, const bni_index_t *idx
   if (resolve_entry_names(idx, entry, entry_index, &first, &last) != 0) {
     return -1;
   }
-  if (bgzf_seek(ctx->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) {
-    bni_print_error("bgzf_seek failed for entry %" PRIu64 " (%s..%s)", entry_index, first, last);
+  if (check_entry_start(ctx, entry, entry_index, first, last) != 0) {
     return -1;
   }
 
@@ -195,10 +208,26 @@ static int check_index_entry(const full_check_ctx_t *ctx, const bni_index_t *idx
   return check_entry_end(ctx, entry, entry_index);
 }
 
+static int seek_full_check_start(const full_check_ctx_t *ctx, const bni_index_t *idx) {
+  if (idx->header.n_blocks == 0) {
+    return 0;
+  }
+  const bni_entry_t *first_entry = &idx->entries[0];
+  if (bgzf_seek(ctx->bgzf_fp, (int64_t)first_entry->beg_voff, SEEK_SET) < 0) {
+    bni_print_error("bgzf_seek failed for first entry");
+    return -1;
+  }
+  return 0;
+}
+
 static int full_check(const bni_index_t *idx, samFile *in, sam_hdr_t *hdr, BGZF *bgzf_fp) {
   full_check_ctx_t ctx = {.in = in, .hdr = hdr, .bgzf_fp = bgzf_fp, .record = bam_init1()};
   if (ctx.record == NULL) {
     bni_print_error("failed to allocate BAM record");
+    return -1;
+  }
+  if (seek_full_check_start(&ctx, idx) != 0) {
+    bam_destroy1(ctx.record);
     return -1;
   }
   for (uint64_t entry_index = 0; entry_index < idx->header.n_blocks; ++entry_index) {
