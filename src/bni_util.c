@@ -10,6 +10,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+enum {
+  DECIMAL_BASE = 10,
+  FORMAT_BUFFER_SIZE = 64,
+};
+
 char *bni_strdup(const char *s) {
   if (s == NULL) {
     return NULL;
@@ -83,7 +88,7 @@ int bni_parse_threads(const char *s, int *out) {
   }
   errno = 0;
   char *end = NULL;
-  long v = strtol(s, &end, 10);
+  long v = strtol(s, &end, DECIMAL_BASE);
   if (errno != 0 || *end != '\0' || v < 0 || v > INT_MAX) {
     return -1;
   }
@@ -112,7 +117,7 @@ void bni_print_warning(const char *fmt, ...) {
 }
 
 void bni_format_u64(char *buf, size_t buflen, uint64_t value) {
-  char tmp[64];
+  char tmp[FORMAT_BUFFER_SIZE];
   int pos = 0;
   int group = 0;
   if (buflen == 0) {
@@ -127,8 +132,8 @@ void bni_format_u64(char *buf, size_t buflen, uint64_t value) {
       tmp[pos++] = ',';
       group = 0;
     }
-    tmp[pos++] = (char)('0' + (value % 10));
-    value /= 10;
+    tmp[pos++] = (char)('0' + (value % DECIMAL_BASE));
+    value /= DECIMAL_BASE;
     group++;
   }
   size_t out = 0;

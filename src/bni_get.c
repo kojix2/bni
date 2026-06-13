@@ -15,6 +15,16 @@
 
 typedef enum { BNI_OUT_BAM, BNI_OUT_SAM, BNI_OUT_CRAM } out_format_t;
 
+enum {
+  OPT_NO_HEADER = 1000,
+  OPT_WITH_HEADER = 1001,
+  OPT_MISSING_OK = 1002,
+  OPT_LIST_MISSING = 1003,
+  OPT_IGNORE_METADATA = 1004,
+  INITIAL_NAME_REQUEST_CAPACITY = 1024,
+  FORMAT_BUFFER_SIZE = 64,
+};
+
 static void usage_get(FILE *fp) {
   fprintf(fp,
           "Usage:\n"
@@ -325,7 +335,7 @@ static void name_request_vec_destroy(name_request_vec_t *v) {
 
 static int name_request_vec_push(name_request_vec_t *v, char *name, uint64_t entry_index) {
   if (v->len == v->cap) {
-    size_t new_cap = v->cap ? v->cap * 2 : 1024;
+    size_t new_cap = v->cap ? v->cap * 2 : INITIAL_NAME_REQUEST_CAPACITY;
     if (new_cap < v->cap || new_cap > SIZE_MAX / sizeof(name_request_t)) {
       bni_print_error("too many requested read names for this platform");
       return -1;
@@ -503,18 +513,19 @@ int bni_cmd_get(int argc, char **argv) {
   int list_missing = 0;
   int ignore_metadata = 0;
   int threads = 0;
-  static const struct option long_opts[] = {{"index", required_argument, NULL, 'i'},
-                                            {"output", required_argument, NULL, 'o'},
-                                            {"output-format", required_argument, NULL, 'O'},
-                                            {"name-file", required_argument, NULL, 'f'},
-                                            {"threads", required_argument, NULL, '@'},
-                                            {"no-header", no_argument, NULL, 1000},
-                                            {"with-header", no_argument, NULL, 1001},
-                                            {"missing-ok", no_argument, NULL, 1002},
-                                            {"list-missing", no_argument, NULL, 1003},
-                                            {"ignore-metadata", no_argument, NULL, 1004},
-                                            {"help", no_argument, NULL, 'h'},
-                                            {0, 0, 0, 0}};
+  static const struct option long_opts[] = {
+      {"index", required_argument, NULL, 'i'},
+      {"output", required_argument, NULL, 'o'},
+      {"output-format", required_argument, NULL, 'O'},
+      {"name-file", required_argument, NULL, 'f'},
+      {"threads", required_argument, NULL, '@'},
+      {"no-header", no_argument, NULL, OPT_NO_HEADER},
+      {"with-header", no_argument, NULL, OPT_WITH_HEADER},
+      {"missing-ok", no_argument, NULL, OPT_MISSING_OK},
+      {"list-missing", no_argument, NULL, OPT_LIST_MISSING},
+      {"ignore-metadata", no_argument, NULL, OPT_IGNORE_METADATA},
+      {"help", no_argument, NULL, 'h'},
+      {0, 0, 0, 0}};
   optind = 1;
   int c;
   while ((c = getopt_long(argc, argv, "i:o:O:f:@::h", long_opts, NULL)) != -1) {
@@ -545,19 +556,19 @@ int bni_cmd_get(int argc, char **argv) {
         return 1;
       }
       break;
-    case 1000:
+    case OPT_NO_HEADER:
       write_header = 0;
       break;
-    case 1001:
+    case OPT_WITH_HEADER:
       write_header = 1;
       break;
-    case 1002:
+    case OPT_MISSING_OK:
       missing_ok = 1;
       break;
-    case 1003:
+    case OPT_LIST_MISSING:
       list_missing = 1;
       break;
-    case 1004:
+    case OPT_IGNORE_METADATA:
       ignore_metadata = 1;
       break;
     case 'h':
@@ -660,7 +671,7 @@ int bni_cmd_get(int argc, char **argv) {
   }
   bni_reader_close(reader);
   if (status == 0 && missing > 0 && !missing_ok) {
-    char mbuf[64];
+    char mbuf[FORMAT_BUFFER_SIZE];
     bni_format_u64(mbuf, sizeof(mbuf), missing);
     bni_print_error("%s requested read name(s) were not found; use --missing-ok to ignore", mbuf);
     status = 1;

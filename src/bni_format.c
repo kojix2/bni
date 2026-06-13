@@ -216,7 +216,7 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
     size_t n_entries =
         remaining < BNI_ENTRY_WRITE_CHUNK ? (size_t)remaining : (size_t)BNI_ENTRY_WRITE_CHUNK;
     for (size_t j = 0; j < n_entries; ++j) {
-      encode_entry(ebuf + j * (size_t)BNI_ENTRY_SIZE, &entries[i + j]);
+      encode_entry(ebuf + (j * (size_t)BNI_ENTRY_SIZE), &entries[i + j]);
     }
     if (write_exact(fp, ebuf, n_entries * (size_t)BNI_ENTRY_SIZE) != 0) {
       bni_print_error("failed writing BNI entries to %s", path);
@@ -424,7 +424,7 @@ const bni_entry_t *bni_find_entry(const bni_index_t *idx, const char *name) {
   uint64_t lo = 0;
   uint64_t hi = idx->header.n_blocks;
   while (lo < hi) {
-    uint64_t mid = lo + (hi - lo) / 2;
+    uint64_t mid = lo + ((hi - lo) / 2);
     const char *mid_last = bni_entry_last_name(idx, &idx->entries[mid]);
     int cmp = strcmp(mid_last, name);
     if (cmp < 0) {

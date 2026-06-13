@@ -6,6 +6,11 @@
 #include <stdlib.h>
 #include <time.h>
 
+enum {
+  TIME_BUFFER_SIZE = 64,
+  FORMAT_BUFFER_SIZE = 64,
+};
+
 static void usage_stats(FILE *fp) {
   fprintf(fp, "Usage:\n"
               "  bni stats [options] <in.name.bam>\n\n"
@@ -22,7 +27,7 @@ static void print_mtime(int64_t t) {
     printf("bam_mtime: %" PRId64 "\n", t);
     return;
   }
-  char buf[64];
+  char buf[TIME_BUFFER_SIZE];
   if (strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", tm) == 0) {
     printf("bam_mtime: %" PRId64 "\n", t);
     return;
@@ -69,10 +74,10 @@ int bni_cmd_stats(int argc, char **argv) {
     free(default_index);
     return 1;
   }
-  char block_buf[64];
-  char rec_buf[64];
-  char str_buf[64];
-  char bam_buf[64];
+  char block_buf[FORMAT_BUFFER_SIZE];
+  char rec_buf[FORMAT_BUFFER_SIZE];
+  char str_buf[FORMAT_BUFFER_SIZE];
+  char bam_buf[FORMAT_BUFFER_SIZE];
   bni_format_u64(block_buf, sizeof(block_buf), idx.header.n_blocks);
   bni_format_u64(rec_buf, sizeof(rec_buf), idx.header.n_records);
   bni_format_u64(str_buf, sizeof(str_buf), idx.header.strings_size);

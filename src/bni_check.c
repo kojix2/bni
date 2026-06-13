@@ -12,6 +12,11 @@
 #include <htslib/sam.h>
 #include <htslib/tbx.h> /* hts_get_bgzfp() is declared here in htslib */
 
+enum {
+  OPT_QUICK = 1000,
+  OPT_FULL = 1001,
+};
+
 static void usage_check(FILE *fp) {
   fprintf(
       fp,
@@ -162,8 +167,8 @@ int bni_cmd_check(int argc, char **argv) {
   int do_full = 0;
   int threads = 0;
   static const struct option long_opts[] = {
-      {"index", required_argument, NULL, 'i'}, {"quick", no_argument, NULL, 1000},
-      {"full", no_argument, NULL, 1001},       {"threads", required_argument, NULL, '@'},
+      {"index", required_argument, NULL, 'i'}, {"quick", no_argument, NULL, OPT_QUICK},
+      {"full", no_argument, NULL, OPT_FULL},   {"threads", required_argument, NULL, '@'},
       {"help", no_argument, NULL, 'h'},        {0, 0, 0, 0}};
   optind = 1;
   int c;
@@ -186,10 +191,10 @@ int bni_cmd_check(int argc, char **argv) {
         return 1;
       }
       break;
-    case 1000:
+    case OPT_QUICK:
       do_full = 0;
       break;
-    case 1001:
+    case OPT_FULL:
       do_full = 1;
       break;
     case 'h':

@@ -28,6 +28,14 @@ typedef struct {
   size_t cap;
 } namebuf_t;
 
+enum {
+  INITIAL_ENTRY_CAPACITY = 4096,
+  INITIAL_STRING_CAPACITY = 65536,
+  BGZF_BLOCK_OFFSET_SHIFT = 16,
+  FORMAT_BUFFER_SIZE = 64,
+  OPT_NO_HEADER_CHECK = 1000,
+};
+
 static void usage_index(FILE *fp) {
   fprintf(fp, "Usage:\n"
               "  bni index [options] <in.name.bam>\n\n"
@@ -60,7 +68,7 @@ static void namebuf_free(namebuf_t *s) {
 
 static int entry_vec_push(entry_vec_t *v, bni_entry_t e) {
   if (v->len == v->cap) {
-    size_t new_cap = v->cap ? v->cap * 2 : 4096;
+    size_t new_cap = v->cap ? v->cap * 2 : INITIAL_ENTRY_CAPACITY;
     if (new_cap < v->cap || new_cap > SIZE_MAX / sizeof(bni_entry_t)) {
       bni_print_error("too many BGZF block entries for this platform");
       return -1;
@@ -91,7 +99,7 @@ static int strbuf_append_cstr(strbuf_t *s, const char *name, uint64_t *offset_ou
   }
   size_t need = s->len + n;
   if (need > s->cap) {
-    size_t new_cap = s->cap ? s->cap * 2 : 65536;
+    size_t new_cap = s->cap ? s->cap * 2 : INITIAL_STRING_CAPACITY;
     while (new_cap < need) {
       if (new_cap > SIZE_MAX / 2) {
         new_cap = need;
@@ -339,7 +347,7 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
       }
     }
 
-    uint64_t rec_coff = rec_beg >> 16;
+    uint64_t rec_coff = rec_beg >> BGZF_BLOCK_OFFSET_SHIFT;
     if (!have_block) {
       block_coff = rec_coff;
       block_beg = rec_beg;
@@ -388,7 +396,7 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   header.n_blocks = (uint64_t)entries.len;
   header.n_records = total_records;
   header.entries_offset = BNI_HEADER_SIZE;
-  header.strings_offset = BNI_HEADER_SIZE + (uint64_t)entries.len * (uint64_t)BNI_ENTRY_SIZE;
+  header.strings_offset = BNI_HEADER_SIZE + ((uint64_t)entries.len * (uint64_t)BNI_ENTRY_SIZE);
   header.strings_size = (uint64_t)strings.len;
   header.bam_size = bam_size;
   header.bam_mtime = bam_mtime;
@@ -424,13 +432,14 @@ int bni_cmd_index(int argc, char **argv) {
   int threads = 0;
   int no_header_check = 0;
   int verbose = 0;
-  static const struct option long_opts[] = {{"output", required_argument, NULL, 'o'},
-                                            {"force", no_argument, NULL, 'f'},
-                                            {"threads", required_argument, NULL, '@'},
-                                            {"no-header-check", no_argument, NULL, 1000},
-                                            {"verbose", no_argument, NULL, 'v'},
-                                            {"help", no_argument, NULL, 'h'},
-                                            {0, 0, 0, 0}};
+  static const struct option long_opts[] = {
+      {"output", required_argument, NULL, 'o'},
+      {"force", no_argument, NULL, 'f'},
+      {"threads", required_argument, NULL, '@'},
+      {"no-header-check", no_argument, NULL, OPT_NO_HEADER_CHECK},
+      {"verbose", no_argument, NULL, 'v'},
+      {"help", no_argument, NULL, 'h'},
+      {0, 0, 0, 0}};
   optind = 1;
   int c;
   while ((c = getopt_long(argc, argv, "o:f@::vh", long_opts, NULL)) != -1) {
@@ -458,7 +467,7 @@ int bni_cmd_index(int argc, char **argv) {
     case 'v':
       verbose = 1;
       break;
-    case 1000:
+    case OPT_NO_HEADER_CHECK:
       no_header_check = 1;
       break;
     case 'h':
@@ -484,9 +493,9 @@ int bni_cmd_index(int argc, char **argv) {
     return 1;
   }
   if (verbose) {
-    char bbuf[64];
-    char rbuf[64];
-    char sbuf[64];
+    char bbuf[FORMAT_BUFFER_SIZE];
+    char rbuf[FORMAT_BUFFER_SIZE];
+    char sbuf[FORMAT_BUFFER_SIZE];
     char *default_out = NULL;
     const char *printed_out = out_path_arg;
     if (printed_out == NULL) {
