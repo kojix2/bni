@@ -564,16 +564,40 @@ static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *request
   return 0;
 }
 
-int bni_cmd_get(int argc, char **argv) {
-  const char *index_path_arg = NULL;
-  const char *out_path = NULL;
-  const char *names_path = NULL;
-  const char *fmt_arg = NULL;
-  int write_header = 1;
-  int missing_ok = 0;
-  int list_missing = 0;
-  int ignore_metadata = 0;
-  int threads = 0;
+typedef struct {
+  const char *index_path_arg;
+  const char *out_path;
+  const char *names_path;
+  const char *fmt_arg;
+  int write_header;
+  int missing_ok;
+  int list_missing;
+  int ignore_metadata;
+  int threads;
+} get_options_t;
+
+typedef struct {
+  const char *bam_path;
+  const char *single_name;
+} get_operands_t;
+
+static int parse_get_threads_arg(int argc, char **argv, int *threads) {
+  if (optarg == NULL) {
+    if (optind < argc && bni_parse_threads(argv[optind], threads) == 0) {
+      optind++;
+      return 0;
+    }
+    bni_print_error("missing or invalid argument for -@/--threads");
+    return -1;
+  }
+  if (bni_parse_threads(optarg, threads) != 0) {
+    bni_print_error("invalid thread count '%s'", optarg);
+    return -1;
+  }
+  return 0;
+}
+
+static int parse_get_options(int argc, char **argv, get_options_t *options) {
   static const struct option long_opts[] = {
       {"index", required_argument, NULL, 'i'},
       {"output", required_argument, NULL, 'o'},
@@ -592,149 +616,207 @@ int bni_cmd_get(int argc, char **argv) {
   while ((c = getopt_long(argc, argv, "i:o:O:f:@::h", long_opts, NULL)) != -1) {
     switch (c) {
     case 'i':
-      index_path_arg = optarg;
+      options->index_path_arg = optarg;
       break;
     case 'o':
-      out_path = optarg;
+      options->out_path = optarg;
       break;
     case 'O':
-      fmt_arg = optarg;
+      options->fmt_arg = optarg;
       break;
     case 'f':
-      names_path = optarg;
+      options->names_path = optarg;
       break;
     case '@':
-      if (optarg == NULL) {
-        if (optind < argc && bni_parse_threads(argv[optind], &threads) == 0) {
-          optind++;
-          break;
-        }
-        bni_print_error("missing or invalid argument for -@/--threads");
-        return 1;
-      }
-      if (bni_parse_threads(optarg, &threads) != 0) {
-        bni_print_error("invalid thread count '%s'", optarg);
-        return 1;
+      if (parse_get_threads_arg(argc, argv, &options->threads) != 0) {
+        return -1;
       }
       break;
     case OPT_NO_HEADER:
-      write_header = 0;
+      options->write_header = 0;
       break;
     case OPT_WITH_HEADER:
-      write_header = 1;
+      options->write_header = 1;
       break;
     case OPT_MISSING_OK:
-      missing_ok = 1;
+      options->missing_ok = 1;
       break;
     case OPT_LIST_MISSING:
-      list_missing = 1;
+      options->list_missing = 1;
       break;
     case OPT_IGNORE_METADATA:
-      ignore_metadata = 1;
+      options->ignore_metadata = 1;
       break;
     case 'h':
       usage_get(stdout);
-      return 0;
+      return 1;
     default:
       usage_get(stderr);
-      return 1;
+      return -1;
     }
   }
-  const char *bam_path = NULL;
-  const char *single_name = NULL;
-  if (names_path != NULL) {
+  return 0;
+}
+
+static int parse_get_operands(int argc, char **argv, const get_options_t *options,
+                              get_operands_t *operands) {
+  if (options->names_path != NULL) {
     if (argc - optind != 1) {
       usage_get(stderr);
-      return 1;
+      return -1;
     }
-    bam_path = argv[optind];
+    operands->bam_path = argv[optind];
+    operands->single_name = NULL;
   } else {
     if (argc - optind != 2) {
       usage_get(stderr);
-      return 1;
+      return -1;
     }
-    bam_path = argv[optind];
-    single_name = argv[optind + 1];
+    operands->bam_path = argv[optind];
+    operands->single_name = argv[optind + 1];
   }
-  if (strcmp(bam_path, "-") == 0) {
+  if (strcmp(operands->bam_path, "-") == 0) {
     bni_print_error("random access from stdin is not supported");
-    return 1;
+    return -1;
   }
-  out_format_t out_fmt = infer_output_format(out_path);
-  if (fmt_arg != NULL && parse_output_format(fmt_arg, &out_fmt) != 0) {
-    bni_print_error("unknown output format '%s'; expected bam, sam, or cram", fmt_arg);
-    return 1;
+  return 0;
+}
+
+static int resolve_get_output_format(const get_options_t *options, out_format_t *out_format) {
+  *out_format = infer_output_format(options->out_path);
+  if (options->fmt_arg != NULL && parse_output_format(options->fmt_arg, out_format) != 0) {
+    bni_print_error("unknown output format '%s'; expected bam, sam, or cram", options->fmt_arg);
+    return -1;
   }
-  if (!write_header && out_fmt != BNI_OUT_SAM) {
+  if (!options->write_header && *out_format != BNI_OUT_SAM) {
     bni_print_error("--no-header is only supported for SAM output");
-    return 1;
+    return -1;
   }
-  bni_reader_options_t reader_opts;
-  memset(&reader_opts, 0, sizeof(reader_opts));
-  reader_opts.threads = threads;
-  reader_opts.ignore_metadata = ignore_metadata;
-  bni_reader_t *reader = NULL;
-  if (bni_reader_open(bam_path, index_path_arg, &reader_opts, &reader) != 0) {
-    return 1;
-  }
-  samFile *out = sam_open(out_path ? out_path : "-", mode_for_format(out_fmt));
+  return 0;
+}
+
+static int open_get_output(const get_options_t *options, out_format_t out_format,
+                           bni_reader_t *reader, samFile **out_file) {
+  samFile *out = sam_open(options->out_path ? options->out_path : "-", mode_for_format(out_format));
   if (out == NULL) {
     bni_print_error("could not open output");
-    bni_reader_close(reader);
-    return 1;
+    return -1;
   }
-  if (threads > 0 && hts_set_threads(out, threads) != 0) {
+  if (options->threads > 0 && hts_set_threads(out, options->threads) != 0) {
     bni_print_warning("failed to enable output threads");
   }
-  if (write_header && sam_hdr_write(out, bni_reader_header(reader)) != 0) {
+  if (options->write_header && sam_hdr_write(out, bni_reader_header(reader)) != 0) {
     bni_print_error("failed to write output header");
     sam_close(out);
+    return -1;
+  }
+  *out_file = out;
+  return 0;
+}
+
+static int fetch_from_name_file(const get_options_t *options, bni_reader_t *reader,
+                                write_context_t *write_ctx, uint64_t *missing_out) {
+  int close_name_file = strcmp(options->names_path, "-") != 0;
+  FILE *name_file = close_name_file ? fopen(options->names_path, "r") : stdin;
+  if (name_file == NULL) {
+    bni_print_error("could not open name file %s: %s", options->names_path, strerror(errno));
+    return 1;
+  }
+
+  int status = 0;
+  name_request_vec_t requests = {0, 0, 0};
+  if (load_name_requests(name_file, reader, &requests, options->list_missing, missing_out) != 0 ||
+      fetch_name_requests(reader, &requests, write_ctx, options->list_missing, missing_out) != 0) {
+    status = 1;
+  }
+  name_request_vec_destroy(&requests);
+  if (close_name_file && fclose(name_file) != 0) {
+    bni_print_error("failed closing name file %s: %s", options->names_path, strerror(errno));
+    status = 1;
+  }
+  return status;
+}
+
+static int fetch_single_name(const get_options_t *options, const char *single_name,
+                             bni_reader_t *reader, write_context_t *write_ctx,
+                             uint64_t *missing_out) {
+  int ret = bni_reader_fetch(reader, single_name, write_record_callback, write_ctx, NULL);
+  if (ret > 0) {
+    if (options->list_missing) {
+      (void)fprintf(stderr, "%s\n", single_name);
+    }
+    (*missing_out)++;
+    return 0;
+  }
+  return ret < 0 ? 1 : 0;
+}
+
+static int report_get_missing(uint64_t missing, int missing_ok) {
+  if (missing == 0 || missing_ok) {
+    return 0;
+  }
+  char missing_buffer[FORMAT_BUFFER_SIZE];
+  bni_format_u64(missing_buffer, sizeof(missing_buffer), missing);
+  bni_print_error("%s requested read name(s) were not found; use --missing-ok to ignore",
+                  missing_buffer);
+  return 1;
+}
+
+static int run_get_command(const get_options_t *options, const get_operands_t *operands,
+                           out_format_t out_format) {
+  bni_reader_options_t reader_opts;
+  memset(&reader_opts, 0, sizeof(reader_opts));
+  reader_opts.threads = options->threads;
+  reader_opts.ignore_metadata = options->ignore_metadata;
+
+  bni_reader_t *reader = NULL;
+  if (bni_reader_open(operands->bam_path, options->index_path_arg, &reader_opts, &reader) != 0) {
+    return 1;
+  }
+
+  samFile *out = NULL;
+  if (open_get_output(options, out_format, reader, &out) != 0) {
     bni_reader_close(reader);
     return 1;
   }
+
   write_context_t write_ctx;
   write_ctx.out = out;
   int status = 0;
   uint64_t missing = 0;
-  if (names_path != NULL) {
-    int close_nf = strcmp(names_path, "-") != 0;
-    FILE *nf = close_nf ? fopen(names_path, "r") : stdin;
-    if (nf == NULL) {
-      bni_print_error("could not open name file %s: %s", names_path, strerror(errno));
-      status = 1;
-    } else {
-      name_request_vec_t requests = {0, 0, 0};
-      if (load_name_requests(nf, reader, &requests, list_missing, &missing) != 0 ||
-          fetch_name_requests(reader, &requests, &write_ctx, list_missing, &missing) != 0) {
-        status = 1;
-      }
-      name_request_vec_destroy(&requests);
-      if (close_nf && fclose(nf) != 0) {
-        bni_print_error("failed closing name file %s: %s", names_path, strerror(errno));
-        status = 1;
-      }
-    }
+  if (options->names_path != NULL) {
+    status = fetch_from_name_file(options, reader, &write_ctx, &missing);
   } else {
-    int ret = bni_reader_fetch(reader, single_name, write_record_callback, &write_ctx, NULL);
-    if (ret > 0) {
-      if (list_missing) {
-        (void)fprintf(stderr, "%s\n", single_name);
-      }
-      missing++;
-    } else if (ret < 0) {
-      status = 1;
-    }
+    status = fetch_single_name(options, operands->single_name, reader, &write_ctx, &missing);
   }
   if (sam_close(out) != 0) {
     bni_print_error("failed closing output");
     status = 1;
   }
   bni_reader_close(reader);
-  if (status == 0 && missing > 0 && !missing_ok) {
-    char mbuf[FORMAT_BUFFER_SIZE];
-    bni_format_u64(mbuf, sizeof(mbuf), missing);
-    bni_print_error("%s requested read name(s) were not found; use --missing-ok to ignore", mbuf);
-    status = 1;
+  if (status == 0) {
+    status = report_get_missing(missing, options->missing_ok);
   }
   return status;
+}
+
+int bni_cmd_get(int argc, char **argv) {
+  get_options_t options = {.write_header = 1};
+  int parse_status = parse_get_options(argc, argv, &options);
+  if (parse_status > 0) {
+    return 0;
+  }
+  if (parse_status < 0) {
+    return 1;
+  }
+
+  get_operands_t operands = {0};
+  if (parse_get_operands(argc, argv, &options, &operands) != 0) {
+    return 1;
+  }
+  out_format_t out_format = BNI_OUT_BAM;
+  if (resolve_get_output_format(&options, &out_format) != 0) {
+    return 1;
+  }
+  return run_get_command(&options, &operands, out_format);
 }
