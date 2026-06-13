@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "bni_internal.h"
 
 #include <errno.h>
@@ -12,15 +10,16 @@
 #define BNI_ENTRY_WRITE_CHUNK 8192u
 
 static void put_u32le(unsigned char *p, uint32_t v) {
-  p[0] = (unsigned char)(v & 0xffu);
-  p[1] = (unsigned char)((v >> 8) & 0xffu);
-  p[2] = (unsigned char)((v >> 16) & 0xffu);
-  p[3] = (unsigned char)((v >> 24) & 0xffu);
+  p[0] = (unsigned char)(v & 0xffU);
+  p[1] = (unsigned char)((v >> 8) & 0xffU);
+  p[2] = (unsigned char)((v >> 16) & 0xffU);
+  p[3] = (unsigned char)((v >> 24) & 0xffU);
 }
 
 static void put_u64le(unsigned char *p, uint64_t v) {
-  for (int i = 0; i < 8; ++i)
-    p[i] = (unsigned char)((v >> (8 * i)) & 0xffu);
+  for (int i = 0; i < 8; ++i) {
+    p[i] = (unsigned char)((v >> (8 * i)) & 0xffU);
+  }
 }
 
 static uint32_t get_u32le(const unsigned char *p) {
@@ -41,6 +40,8 @@ static int write_exact(FILE *fp, const void *buf, size_t n) {
 }
 
 static int read_exact(FILE *fp, void *buf, size_t n) { return fread(buf, 1, n, fp) == n ? 0 : -1; }
+
+static void close_ignoring_error(FILE *fp) { (void)fclose(fp); }
 
 static void encode_header(unsigned char out[BNI_HEADER_SIZE], const bni_file_header_t *h) {
   memset(out, 0, BNI_HEADER_SIZE);
@@ -64,8 +65,9 @@ static void encode_header(unsigned char out[BNI_HEADER_SIZE], const bni_file_hea
 }
 
 static int decode_header(const unsigned char in[BNI_HEADER_SIZE], bni_file_header_t *h) {
-  if (in[0] != BNI_MAGIC0 || in[1] != BNI_MAGIC1 || in[2] != BNI_MAGIC2 || in[3] != BNI_MAGIC3)
+  if (in[0] != BNI_MAGIC0 || in[1] != BNI_MAGIC1 || in[2] != BNI_MAGIC2 || in[3] != BNI_MAGIC3) {
     return -1;
+  }
   memset(h, 0, sizeof(*h));
   h->version = get_u32le(in + 4);
   h->header_size = get_u32le(in + 8);
@@ -166,7 +168,7 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
   encode_header(hbuf, header);
   if (write_exact(fp, hbuf, sizeof(hbuf)) != 0) {
     bni_print_error("failed writing BNI header to %s", path);
-    fclose(fp);
+    close_ignoring_error(fp);
     return -1;
   }
   unsigned char *ebuf = NULL;
@@ -174,7 +176,7 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
     ebuf = (unsigned char *)malloc((size_t)BNI_ENTRY_WRITE_CHUNK * (size_t)BNI_ENTRY_SIZE);
     if (ebuf == NULL) {
       bni_print_error("out of memory while writing BNI entries");
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
   }
@@ -188,7 +190,7 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
     if (write_exact(fp, ebuf, n_entries * (size_t)BNI_ENTRY_SIZE) != 0) {
       bni_print_error("failed writing BNI entries to %s", path);
       free(ebuf);
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
     i += (uint64_t)n_entries;
@@ -196,7 +198,7 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
   free(ebuf);
   if (header->strings_size > 0 && write_exact(fp, strings, (size_t)header->strings_size) != 0) {
     bni_print_error("failed writing BNI string table to %s", path);
-    fclose(fp);
+    close_ignoring_error(fp);
     return -1;
   }
   if (fclose(fp) != 0) {
@@ -216,32 +218,32 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
   unsigned char hbuf[BNI_HEADER_SIZE];
   if (read_exact(fp, hbuf, sizeof(hbuf)) != 0) {
     bni_print_error("failed reading BNI header from %s", path);
-    fclose(fp);
+    close_ignoring_error(fp);
     return -1;
   }
   if (decode_header(hbuf, &idx->header) != 0 || validate_header(&idx->header) != 0) {
     bni_print_error("%s is not a valid BNI v2 BGZF-block index", path);
-    fclose(fp);
+    close_ignoring_error(fp);
     return -1;
   }
   uint64_t entry_bytes_u64 = idx->header.n_blocks * (uint64_t)BNI_ENTRY_SIZE;
   if (entry_bytes_u64 > SIZE_MAX || idx->header.strings_size > SIZE_MAX - 1) {
     bni_print_error("index is too large for this platform");
-    fclose(fp);
+    close_ignoring_error(fp);
     return -1;
   }
   if (idx->header.n_blocks > 0) {
     idx->entries = (bni_entry_t *)calloc((size_t)idx->header.n_blocks, sizeof(bni_entry_t));
     if (idx->entries == NULL) {
       bni_print_error("out of memory while loading entries");
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
   }
   if (fseeko(fp, (off_t)idx->header.entries_offset, SEEK_SET) != 0) {
     bni_print_error("failed seeking to entries in %s", path);
     bni_index_destroy(idx);
-    fclose(fp);
+    close_ignoring_error(fp);
     return -1;
   }
   unsigned char ebuf[BNI_ENTRY_SIZE];
@@ -249,7 +251,7 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
     if (read_exact(fp, ebuf, sizeof(ebuf)) != 0) {
       bni_print_error("failed reading entry from %s", path);
       bni_index_destroy(idx);
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
     decode_entry(ebuf, &idx->entries[i]);
@@ -258,20 +260,20 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
   if (idx->strings == NULL) {
     bni_print_error("out of memory while loading string table");
     bni_index_destroy(idx);
-    fclose(fp);
+    close_ignoring_error(fp);
     return -1;
   }
   if (idx->header.strings_size > 0) {
     if (fseeko(fp, (off_t)idx->header.strings_offset, SEEK_SET) != 0) {
       bni_print_error("failed seeking to string table in %s", path);
       bni_index_destroy(idx);
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
     if (read_exact(fp, idx->strings, (size_t)idx->header.strings_size) != 0) {
       bni_print_error("failed reading string table from %s", path);
       bni_index_destroy(idx);
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
   }
@@ -281,25 +283,25 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
     const char *last = string_at_checked(idx, e->last_name_offset, i, "last");
     if (first == NULL || last == NULL) {
       bni_index_destroy(idx);
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
     if (strcmp(first, last) > 0) {
       bni_print_error("entry %" PRIu64 " has first QNAME greater than last QNAME", i);
       bni_index_destroy(idx);
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
     if (e->beg_voff >= e->end_voff) {
       bni_print_error("entry %" PRIu64 " has an empty virtual-offset range", i);
       bni_index_destroy(idx);
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
     if (e->n_records == 0) {
       bni_print_error("entry %" PRIu64 " has zero records", i);
       bni_index_destroy(idx);
-      fclose(fp);
+      close_ignoring_error(fp);
       return -1;
     }
     if (i > 0) {
@@ -309,48 +311,57 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
       if (strcmp(prev_first, first) > 0) {
         bni_print_error("entries are not sorted by first QNAME");
         bni_index_destroy(idx);
-        fclose(fp);
+        close_ignoring_error(fp);
         return -1;
       }
       if (strcmp(prev_last, last) > 0) {
         bni_print_error("entries are not sorted by last QNAME");
         bni_index_destroy(idx);
-        fclose(fp);
+        close_ignoring_error(fp);
         return -1;
       }
       if (prev_e->end_voff > e->beg_voff) {
         bni_print_error("entries have overlapping virtual-offset ranges");
         bni_index_destroy(idx);
-        fclose(fp);
+        close_ignoring_error(fp);
         return -1;
       }
     }
   }
-  fclose(fp);
+  if (fclose(fp) != 0) {
+    bni_print_error("failed closing %s: %s", path, strerror(errno));
+    bni_index_destroy(idx);
+    return -1;
+  }
   return 0;
 }
 
 void bni_index_destroy(bni_index_t *idx) {
-  if (idx == NULL)
+  if (idx == NULL) {
     return;
+  }
   free(idx->entries);
   free(idx->strings);
   memset(idx, 0, sizeof(*idx));
 }
 
 const char *bni_entry_first_name(const bni_index_t *idx, const bni_entry_t *entry) {
-  if (idx == NULL || entry == NULL || idx->strings == NULL)
+  if (idx == NULL || entry == NULL || idx->strings == NULL) {
     return NULL;
-  if (entry->first_name_offset >= idx->header.strings_size)
+  }
+  if (entry->first_name_offset >= idx->header.strings_size) {
     return NULL;
+  }
   return idx->strings + entry->first_name_offset;
 }
 
 const char *bni_entry_last_name(const bni_index_t *idx, const bni_entry_t *entry) {
-  if (idx == NULL || entry == NULL || idx->strings == NULL)
+  if (idx == NULL || entry == NULL || idx->strings == NULL) {
     return NULL;
-  if (entry->last_name_offset >= idx->header.strings_size)
+  }
+  if (entry->last_name_offset >= idx->header.strings_size) {
     return NULL;
+  }
   return idx->strings + entry->last_name_offset;
 }
 
@@ -368,26 +379,31 @@ bni_index_t *bni_index_open(const char *path) {
 }
 
 void bni_index_close(bni_index_t *idx) {
-  if (idx == NULL)
+  if (idx == NULL) {
     return;
+  }
   bni_index_destroy(idx);
   free(idx);
 }
 
 const bni_entry_t *bni_find_entry(const bni_index_t *idx, const char *name) {
-  if (idx == NULL || name == NULL)
+  if (idx == NULL || name == NULL) {
     return NULL;
-  uint64_t lo = 0, hi = idx->header.n_blocks;
+  }
+  uint64_t lo = 0;
+  uint64_t hi = idx->header.n_blocks;
   while (lo < hi) {
     uint64_t mid = lo + (hi - lo) / 2;
     const char *mid_last = bni_entry_last_name(idx, &idx->entries[mid]);
     int cmp = strcmp(mid_last, name);
-    if (cmp < 0)
+    if (cmp < 0) {
       lo = mid + 1;
-    else
+    } else {
       hi = mid;
+    }
   }
-  if (lo == idx->header.n_blocks)
+  if (lo == idx->header.n_blocks) {
     return NULL;
+  }
   return &idx->entries[lo];
 }

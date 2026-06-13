@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "bni_internal.h"
 
 #include <errno.h>
@@ -81,10 +79,12 @@ static int entry_vec_push(entry_vec_t *v, bni_entry_t e) {
 
 static int strbuf_append_cstr(strbuf_t *s, const char *name, uint64_t *offset_out) {
   size_t n = strlen(name) + 1;
-  if (s->len > UINT64_MAX)
+  if (s->len > UINT64_MAX) {
     return -1;
-  if (offset_out)
+  }
+  if (offset_out) {
     *offset_out = (uint64_t)s->len;
+  }
   if (n > SIZE_MAX - s->len) {
     bni_print_error("string table is too large");
     return -1;
@@ -115,7 +115,8 @@ static int strbuf_append_cstr(strbuf_t *s, const char *name, uint64_t *offset_ou
 static int add_bgzf_block(entry_vec_t *entries, strbuf_t *strings, const char *first_name,
                           const char *last_name, uint64_t beg_voff, uint64_t end_voff,
                           uint32_t n_records) {
-  uint64_t first_offset = 0, last_offset = 0;
+  uint64_t first_offset = 0;
+  uint64_t last_offset = 0;
   if (first_name == NULL || last_name == NULL || n_records == 0) {
     bni_print_error("internal error while adding empty BGZF block entry");
     return -1;
@@ -129,10 +130,12 @@ static int add_bgzf_block(entry_vec_t *entries, strbuf_t *strings, const char *f
     bni_print_error("internal error while adding empty virtual-offset range");
     return -1;
   }
-  if (strbuf_append_cstr(strings, first_name, &first_offset) != 0)
+  if (strbuf_append_cstr(strings, first_name, &first_offset) != 0) {
     return -1;
-  if (strbuf_append_cstr(strings, last_name, &last_offset) != 0)
+  }
+  if (strbuf_append_cstr(strings, last_name, &last_offset) != 0) {
     return -1;
+  }
   bni_entry_t e;
   memset(&e, 0, sizeof(e));
   e.first_name_offset = first_offset;
@@ -144,8 +147,9 @@ static int add_bgzf_block(entry_vec_t *entries, strbuf_t *strings, const char *f
 }
 
 static int header_is_queryname_lex(sam_hdr_t *hdr, int no_header_check) {
-  if (no_header_check)
+  if (no_header_check) {
     return 0;
+  }
   kstring_t so = {0, 0, NULL};
   kstring_t ss = {0, 0, NULL};
   int ok = 0;
@@ -173,8 +177,9 @@ done:
 static uint64_t header_hash64(sam_hdr_t *hdr) {
   const char *text = sam_hdr_str(hdr);
   size_t len = sam_hdr_length(hdr);
-  if (text == NULL || len == SIZE_MAX)
+  if (text == NULL || len == SIZE_MAX) {
     return bni_fnv1a64("", 0);
+  }
   return bni_fnv1a64(text, len);
 }
 
@@ -199,8 +204,9 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   int threads = opts ? opts->threads : 0;
   int no_header_check = opts ? opts->no_header_check : 0;
 
-  if (stats)
+  if (stats) {
     memset(stats, 0, sizeof(*stats));
+  }
   if (bam_path == NULL || strcmp(bam_path, "-") == 0) {
     bni_print_error("indexing from stdin is not supported because BNI stores BGZF virtual offsets");
     return -1;
@@ -235,8 +241,9 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
     free(default_out);
     return -1;
   }
-  if (threads > 0 && hts_set_threads(fp, threads) != 0)
+  if (threads > 0 && hts_set_threads(fp, threads) != 0) {
     bni_print_warning("failed to enable input threads");
+  }
   bam_hdr_t *hdr = sam_hdr_read(fp);
   if (hdr == NULL) {
     bni_print_error("failed to read BAM header from %s", bam_path);
@@ -336,18 +343,21 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
     if (!have_block) {
       block_coff = rec_coff;
       block_beg = rec_beg;
-      if (namebuf_set(&block_first, qname) != 0)
+      if (namebuf_set(&block_first, qname) != 0) {
         goto cleanup;
+      }
       block_n = 1;
       have_block = 1;
     } else if (rec_coff != block_coff) {
       if (add_bgzf_block(&entries, &strings, block_first.data, prev_name.data, block_beg, rec_beg,
-                         block_n) != 0)
+                         block_n) != 0) {
         goto cleanup;
+      }
       block_coff = rec_coff;
       block_beg = rec_beg;
-      if (namebuf_set(&block_first, qname) != 0)
+      if (namebuf_set(&block_first, qname) != 0) {
         goto cleanup;
+      }
       block_n = 1;
     } else {
       if (block_n == UINT32_MAX) {
@@ -357,15 +367,17 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
       block_n++;
     }
 
-    if (namebuf_set(&prev_name, qname) != 0)
+    if (namebuf_set(&prev_name, qname) != 0) {
       goto cleanup;
+    }
     total_records++;
   }
 
   if (have_block) {
     if (add_bgzf_block(&entries, &strings, block_first.data, prev_name.data, block_beg,
-                       last_rec_end, block_n) != 0)
+                       last_rec_end, block_n) != 0) {
       goto cleanup;
+    }
   }
 
   bni_file_header_t header;
@@ -383,8 +395,10 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   header.header_hash = header_hash64(hdr);
   header.sort_order = BNI_SORT_QUERYNAME_LEX;
   header.entry_size = BNI_ENTRY_SIZE;
-  if (bni_write_index_file(out_path, &header, entries.data, strings.data ? strings.data : "") != 0)
+  if (bni_write_index_file(out_path, &header, entries.data, strings.data ? strings.data : "") !=
+      0) {
     goto cleanup;
+  }
   if (stats) {
     stats->n_blocks = header.n_blocks;
     stats->n_records = header.n_records;
@@ -406,7 +420,10 @@ cleanup:
 
 int bni_cmd_index(int argc, char **argv) {
   const char *out_path_arg = NULL;
-  int force = 0, threads = 0, no_header_check = 0, verbose = 0;
+  int force = 0;
+  int threads = 0;
+  int no_header_check = 0;
+  int verbose = 0;
   static const struct option long_opts[] = {{"output", required_argument, NULL, 'o'},
                                             {"force", no_argument, NULL, 'f'},
                                             {"threads", required_argument, NULL, '@'},
@@ -463,10 +480,13 @@ int bni_cmd_index(int argc, char **argv) {
   opts.threads = threads;
   opts.no_header_check = no_header_check;
   bni_build_stats_t stats;
-  if (bni_build_index(bam_path, out_path_arg, &opts, &stats) != 0)
+  if (bni_build_index(bam_path, out_path_arg, &opts, &stats) != 0) {
     return 1;
+  }
   if (verbose) {
-    char bbuf[64], rbuf[64], sbuf[64];
+    char bbuf[64];
+    char rbuf[64];
+    char sbuf[64];
     char *default_out = NULL;
     const char *printed_out = out_path_arg;
     if (printed_out == NULL) {

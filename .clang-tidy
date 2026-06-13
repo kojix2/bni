@@ -1,0 +1,14 @@
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-*
+HeaderFilterRegex: '^(src|include)/'
+FormatStyle: file
+CheckOptions:
+  readability-function-cognitive-complexity.Threshold: '25'
+  readability-function-size.LineThreshold: '120'

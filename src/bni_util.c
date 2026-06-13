@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "bni_internal.h"
 
 #include <errno.h>
@@ -13,28 +11,33 @@
 #include <unistd.h>
 
 char *bni_strdup(const char *s) {
-  if (s == NULL)
+  if (s == NULL) {
     return NULL;
+  }
   size_t n = strlen(s) + 1;
   char *p = (char *)malloc(n);
-  if (p == NULL)
+  if (p == NULL) {
     return NULL;
+  }
   memcpy(p, s, n);
   return p;
 }
 
 char *bni_default_index_path(const char *bam_path) {
-  if (bam_path == NULL)
+  if (bam_path == NULL) {
     return NULL;
+  }
   size_t n = strlen(bam_path);
   const char *suffix = ".bni";
   size_t m = strlen(suffix);
-  if (n > SIZE_MAX - m - 1)
+  if (n > SIZE_MAX - m - 1) {
     return NULL;
+  }
   char *out = (char *)malloc(n + m + 1);
-  if (out == NULL)
+  if (out == NULL) {
     return NULL;
-  memcpy(out, bam_path, n);
+  }
+  memcpy(out, bam_path, n + 1);
   memcpy(out + n, suffix, m + 1);
   return out;
 }
@@ -51,34 +54,42 @@ uint64_t bni_fnv1a64(const void *data, size_t len) {
 
 int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out) {
   struct stat st;
-  if (stat(path, &st) != 0)
+  if (stat(path, &st) != 0) {
     return -1;
-  if (size_out)
+  }
+  if (size_out) {
     *size_out = (uint64_t)st.st_size;
-  if (mtime_out)
+  }
+  if (mtime_out) {
     *mtime_out = (int64_t)st.st_mtime;
+  }
   return 0;
 }
 
 int bni_path_exists(const char *path) { return path != NULL && access(path, F_OK) == 0; }
 
 int bni_has_suffix(const char *s, const char *suffix) {
-  if (s == NULL || suffix == NULL)
+  if (s == NULL || suffix == NULL) {
     return 0;
-  size_t n = strlen(s), m = strlen(suffix);
+  }
+  size_t n = strlen(s);
+  size_t m = strlen(suffix);
   return m <= n && strcmp(s + n - m, suffix) == 0;
 }
 
 int bni_parse_threads(const char *s, int *out) {
-  if (s == NULL || *s == '\0')
+  if (s == NULL || *s == '\0') {
     return -1;
+  }
   errno = 0;
   char *end = NULL;
   long v = strtol(s, &end, 10);
-  if (errno != 0 || *end != '\0' || v < 0 || v > INT_MAX)
+  if (errno != 0 || *end != '\0' || v < 0 || v > INT_MAX) {
     return -1;
-  if (out)
+  }
+  if (out) {
     *out = (int)v;
+  }
   return 0;
 }
 
@@ -102,9 +113,11 @@ void bni_print_warning(const char *fmt, ...) {
 
 void bni_format_u64(char *buf, size_t buflen, uint64_t value) {
   char tmp[64];
-  int pos = 0, group = 0;
-  if (buflen == 0)
+  int pos = 0;
+  int group = 0;
+  if (buflen == 0) {
     return;
+  }
   if (value == 0) {
     snprintf(buf, buflen, "0");
     return;
@@ -119,7 +132,8 @@ void bni_format_u64(char *buf, size_t buflen, uint64_t value) {
     group++;
   }
   size_t out = 0;
-  while (pos > 0 && out + 1 < buflen)
+  while (pos > 0 && out + 1 < buflen) {
     buf[out++] = tmp[--pos];
+  }
   buf[out] = '\0';
 }

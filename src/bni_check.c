@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "bni_internal.h"
 
 #include <errno.h>
@@ -30,8 +28,9 @@ static void usage_check(FILE *fp) {
 static uint64_t header_hash64(sam_hdr_t *hdr) {
   const char *text = sam_hdr_str(hdr);
   size_t len = sam_hdr_length(hdr);
-  if (text == NULL || len == SIZE_MAX)
+  if (text == NULL || len == SIZE_MAX) {
     return bni_fnv1a64("", 0);
+  }
   return bni_fnv1a64(text, len);
 }
 
@@ -160,7 +159,8 @@ static int full_check(const bni_index_t *idx, samFile *in, sam_hdr_t *hdr, BGZF 
 
 int bni_cmd_check(int argc, char **argv) {
   const char *index_path_arg = NULL;
-  int do_full = 0, threads = 0;
+  int do_full = 0;
+  int threads = 0;
   static const struct option long_opts[] = {
       {"index", required_argument, NULL, 'i'}, {"quick", no_argument, NULL, 1000},
       {"full", no_argument, NULL, 1001},       {"threads", required_argument, NULL, '@'},
@@ -231,8 +231,9 @@ int bni_cmd_check(int argc, char **argv) {
     free(default_index);
     return 1;
   }
-  if (threads > 0 && hts_set_threads(in, threads) != 0)
+  if (threads > 0 && hts_set_threads(in, threads) != 0) {
     bni_print_warning("failed to enable input threads");
+  }
   sam_hdr_t *hdr = sam_hdr_read(in);
   if (hdr == NULL) {
     bni_print_error("failed to read BAM header from %s", bam_path);
@@ -242,18 +243,23 @@ int bni_cmd_check(int argc, char **argv) {
     return 1;
   }
   int status = 0;
-  if (check_metadata(&idx, bam_path, hdr) != 0)
+  if (check_metadata(&idx, bam_path, hdr) != 0) {
     status = 1;
+  }
   if (status == 0 && do_full) {
     BGZF *bgzf_fp = hts_get_bgzfp(in);
     if (bgzf_fp == NULL) {
       bni_print_error("failed to access BGZF handle");
       status = 1;
-    } else if (full_check(&idx, in, hdr, bgzf_fp) != 0)
-      status = 1;
+    } else if (full_check(&idx, in, hdr, bgzf_fp) != 0) {
+      {
+        status = 1;
+      }
+    }
   }
-  if (status == 0)
+  if (status == 0) {
     printf("OK\n");
+  }
   sam_hdr_destroy(hdr);
   sam_close(in);
   bni_index_destroy(&idx);

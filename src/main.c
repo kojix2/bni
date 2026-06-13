@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "bni_internal.h"
 
 #include <stdio.h>
@@ -33,14 +31,18 @@ int main(int argc, char **argv) {
     printf("bni %s\n", BNI_VERSION_STRING);
     return 0;
   }
-  if (strcmp(argv[1], "index") == 0)
+  if (strcmp(argv[1], "index") == 0) {
     return bni_cmd_index(argc - 1, argv + 1);
-  if (strcmp(argv[1], "get") == 0 || strcmp(argv[1], "query") == 0)
+  }
+  if (strcmp(argv[1], "get") == 0 || strcmp(argv[1], "query") == 0) {
     return bni_cmd_get(argc - 1, argv + 1);
-  if (strcmp(argv[1], "stats") == 0)
+  }
+  if (strcmp(argv[1], "stats") == 0) {
     return bni_cmd_stats(argc - 1, argv + 1);
-  if (strcmp(argv[1], "check") == 0)
+  }
+  if (strcmp(argv[1], "check") == 0) {
     return bni_cmd_check(argc - 1, argv + 1);
+  }
   bni_print_error("unknown command '%s'", argv[1]);
   usage(stderr);
   return 1;

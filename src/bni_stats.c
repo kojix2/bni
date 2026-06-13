@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "bni_internal.h"
 
 #include <getopt.h>
@@ -71,7 +69,10 @@ int bni_cmd_stats(int argc, char **argv) {
     free(default_index);
     return 1;
   }
-  char block_buf[64], rec_buf[64], str_buf[64], bam_buf[64];
+  char block_buf[64];
+  char rec_buf[64];
+  char str_buf[64];
+  char bam_buf[64];
   bni_format_u64(block_buf, sizeof(block_buf), idx.header.n_blocks);
   bni_format_u64(rec_buf, sizeof(rec_buf), idx.header.n_records);
   bni_format_u64(str_buf, sizeof(str_buf), idx.header.strings_size);
@@ -83,11 +84,12 @@ int bni_cmd_stats(int argc, char **argv) {
   printf("sort_order: queryname:lexicographical\n");
   printf("blocks: %s\n", block_buf);
   printf("records: %s\n", rec_buf);
-  if (idx.header.n_blocks > 0)
+  if (idx.header.n_blocks > 0) {
     printf("avg_records_per_block: %.6f\n",
            (double)idx.header.n_records / (double)idx.header.n_blocks);
-  else
+  } else {
     printf("avg_records_per_block: 0\n");
+  }
   printf("entry_size: %u\n", idx.header.entry_size);
   printf("string_table_bytes: %s\n", str_buf);
   printf("bam_size: %s\n", bam_buf);

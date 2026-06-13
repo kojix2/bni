@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "bni_internal.h"
 
 #include <errno.h>
@@ -55,10 +53,12 @@ static int parse_output_format(const char *s, out_format_t *fmt) {
 
 static out_format_t infer_output_format(const char *path) {
   if (path != NULL) {
-    if (bni_has_suffix(path, ".sam"))
+    if (bni_has_suffix(path, ".sam")) {
       return BNI_OUT_SAM;
-    if (bni_has_suffix(path, ".cram"))
+    }
+    if (bni_has_suffix(path, ".cram")) {
       return BNI_OUT_CRAM;
+    }
   }
   return BNI_OUT_BAM;
 }
@@ -78,8 +78,9 @@ static const char *mode_for_format(out_format_t fmt) {
 static uint64_t header_hash64(sam_hdr_t *hdr) {
   const char *text = sam_hdr_str(hdr);
   size_t len = sam_hdr_length(hdr);
-  if (text == NULL || len == SIZE_MAX)
+  if (text == NULL || len == SIZE_MAX) {
     return bni_fnv1a64("", 0);
+  }
   return bni_fnv1a64(text, len);
 }
 
@@ -110,11 +111,13 @@ static int check_metadata(const bni_index_t *idx, const char *bam_path, sam_hdr_
 }
 
 static char *trim_line(char *line) {
-  if (line == NULL)
+  if (line == NULL) {
     return NULL;
+  }
   size_t n = strlen(line);
-  while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+  while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) {
     line[--n] = '\0';
+  }
   return line;
 }
 
@@ -131,8 +134,9 @@ int bni_reader_open(const char *bam_path, const char *index_path, const bni_read
   int threads = opts ? opts->threads : 0;
   int ignore_metadata = opts ? opts->ignore_metadata : 0;
 
-  if (reader_out == NULL)
+  if (reader_out == NULL) {
     return -1;
+  }
   *reader_out = NULL;
   if (bam_path == NULL || strcmp(bam_path, "-") == 0) {
     bni_print_error("random access from stdin is not supported");
@@ -156,15 +160,17 @@ int bni_reader_open(const char *bam_path, const char *index_path, const bni_read
     free(default_index);
     return -1;
   }
-  if (bni_load_index_file(resolved_index_path, &reader->idx) != 0)
+  if (bni_load_index_file(resolved_index_path, &reader->idx) != 0) {
     goto fail;
+  }
   reader->in = sam_open(bam_path, "r");
   if (reader->in == NULL) {
     bni_print_error("could not open %s", bam_path);
     goto fail;
   }
-  if (threads > 0 && hts_set_threads(reader->in, threads) != 0)
+  if (threads > 0 && hts_set_threads(reader->in, threads) != 0) {
     bni_print_warning("failed to enable input threads");
+  }
   reader->hdr = sam_hdr_read(reader->in);
   if (reader->hdr == NULL) {
     bni_print_error("failed to read BAM header from %s", bam_path);
@@ -175,8 +181,9 @@ int bni_reader_open(const char *bam_path, const char *index_path, const bni_read
     bni_print_error("input is not BAM; bni supports BGZF-compressed BAM only");
     goto fail;
   }
-  if (!ignore_metadata && check_metadata(&reader->idx, bam_path, reader->hdr) != 0)
+  if (!ignore_metadata && check_metadata(&reader->idx, bam_path, reader->hdr) != 0) {
     goto fail;
+  }
   reader->bgzf_fp = hts_get_bgzfp(reader->in);
   if (reader->bgzf_fp == NULL) {
     bni_print_error("failed to access BGZF handle");
@@ -199,12 +206,14 @@ fail:
 }
 
 void bni_reader_close(bni_reader_t *reader) {
-  if (reader == NULL)
+  if (reader == NULL) {
     return;
+  }
   bam_destroy1(reader->record);
   sam_hdr_destroy(reader->hdr);
-  if (reader->in)
+  if (reader->in) {
     sam_close(reader->in);
+  }
   bni_index_destroy(&reader->idx);
   free(reader);
 }
@@ -219,14 +228,17 @@ const sam_hdr_t *bni_reader_header(const bni_reader_t *reader) {
 
 int bni_reader_fetch(bni_reader_t *reader, const char *name, bni_record_callback callback,
                      void *user, uint32_t *n_records_out) {
-  if (n_records_out)
+  if (n_records_out) {
     *n_records_out = 0;
-  if (reader == NULL || name == NULL)
+  }
+  if (reader == NULL || name == NULL) {
     return -1;
+  }
 
   const bni_entry_t *entry = bni_find_entry(&reader->idx, name);
-  if (entry == NULL)
+  if (entry == NULL) {
     return 1;
+  }
 
   if (bgzf_seek(reader->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) {
     bni_print_error("bgzf_seek failed for QNAME '%s'", name);
@@ -249,12 +261,15 @@ int bni_reader_fetch(bni_reader_t *reader, const char *name, bni_record_callback
       return -1;
     }
     int cmp = strcmp(qname, name);
-    if (cmp < 0)
+    if (cmp < 0) {
       continue;
-    if (cmp > 0)
+    }
+    if (cmp > 0) {
       break;
-    if (callback != NULL && callback(reader->record, reader->hdr, user) != 0)
+    }
+    if (callback != NULL && callback(reader->record, reader->hdr, user) != 0) {
       return -1;
+    }
     if (seen == UINT32_MAX) {
       bni_print_error("too many records matched QNAME '%s'", name);
       return -1;
@@ -262,10 +277,12 @@ int bni_reader_fetch(bni_reader_t *reader, const char *name, bni_record_callback
     seen++;
   }
 
-  if (seen == 0)
+  if (seen == 0) {
     return 1;
-  if (n_records_out)
+  }
+  if (n_records_out) {
     *n_records_out = seen;
+  }
   return 0;
 }
 
@@ -295,10 +312,12 @@ static int write_record_callback(const bam1_t *record, const sam_hdr_t *hdr, voi
 }
 
 static void name_request_vec_destroy(name_request_vec_t *v) {
-  if (v == NULL)
+  if (v == NULL) {
     return;
-  for (size_t i = 0; i < v->len; ++i)
+  }
+  for (size_t i = 0; i < v->len; ++i) {
     free(v->data[i].name);
+  }
   free(v->data);
   v->data = NULL;
   v->len = v->cap = 0;
@@ -329,16 +348,19 @@ static int name_request_vec_push(name_request_vec_t *v, char *name, uint64_t ent
 static int compare_name_requests(const void *a, const void *b) {
   const name_request_t *ra = (const name_request_t *)a;
   const name_request_t *rb = (const name_request_t *)b;
-  if (ra->entry_index < rb->entry_index)
+  if (ra->entry_index < rb->entry_index) {
     return -1;
-  if (ra->entry_index > rb->entry_index)
+  }
+  if (ra->entry_index > rb->entry_index) {
     return 1;
+  }
   return strcmp(ra->name, rb->name);
 }
 
 static void dedupe_name_requests(name_request_vec_t *v) {
-  if (v->len == 0)
+  if (v->len == 0) {
     return;
+  }
   size_t out = 1;
   for (size_t i = 1; i < v->len; ++i) {
     name_request_t *prev = &v->data[out - 1];
@@ -347,8 +369,9 @@ static void dedupe_name_requests(name_request_vec_t *v) {
       free(cur->name);
       continue;
     }
-    if (out != i)
+    if (out != i) {
       v->data[out] = *cur;
+    }
     out++;
   }
   v->len = out;
@@ -363,13 +386,15 @@ static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t
   while ((nread = getline(&line, &cap, nf)) >= 0) {
     (void)nread;
     char *trimmed = trim_line(line);
-    if (trimmed[0] == '\0')
+    if (trimmed[0] == '\0') {
       continue;
+    }
 
     const bni_entry_t *entry = bni_find_entry(&reader->idx, trimmed);
     if (entry == NULL) {
-      if (list_missing)
+      if (list_missing) {
         fprintf(stderr, "%s\n", trimmed);
+      }
       (*missing_out)++;
       continue;
     }
@@ -394,8 +419,9 @@ static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t
 static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *requests,
                                write_context_t *write_ctx, int list_missing,
                                uint64_t *missing_out) {
-  if (requests->len == 0)
+  if (requests->len == 0) {
     return 0;
+  }
   qsort(requests->data, requests->len, sizeof(*requests->data), compare_name_requests);
   dedupe_name_requests(requests);
 
@@ -403,8 +429,9 @@ static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *request
   while (group_beg < requests->len) {
     uint64_t entry_index = requests->data[group_beg].entry_index;
     size_t group_end = group_beg + 1;
-    while (group_end < requests->len && requests->data[group_end].entry_index == entry_index)
+    while (group_end < requests->len && requests->data[group_end].entry_index == entry_index) {
       group_end++;
+    }
 
     const bni_entry_t *entry = &reader->idx.entries[entry_index];
     if (bgzf_seek(reader->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) {
@@ -429,29 +456,34 @@ static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *request
         return -1;
       }
 
-      if (strcmp(qname, last_target) > 0)
+      if (strcmp(qname, last_target) > 0) {
         break;
+      }
       while (target < group_end && strcmp(requests->data[target].name, qname) < 0) {
         if (!requests->data[target].found) {
-          if (list_missing)
+          if (list_missing) {
             fprintf(stderr, "%s\n", requests->data[target].name);
+          }
           (*missing_out)++;
         }
         target++;
       }
-      if (target == group_end)
+      if (target == group_end) {
         break;
+      }
       if (strcmp(qname, requests->data[target].name) == 0) {
         requests->data[target].found = 1;
-        if (write_record_callback(reader->record, reader->hdr, write_ctx) != 0)
+        if (write_record_callback(reader->record, reader->hdr, write_ctx) != 0) {
           return -1;
+        }
       }
     }
 
     while (target < group_end) {
       if (!requests->data[target].found) {
-        if (list_missing)
+        if (list_missing) {
           fprintf(stderr, "%s\n", requests->data[target].name);
+        }
         (*missing_out)++;
       }
       target++;
@@ -462,8 +494,15 @@ static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *request
 }
 
 int bni_cmd_get(int argc, char **argv) {
-  const char *index_path_arg = NULL, *out_path = NULL, *names_path = NULL, *fmt_arg = NULL;
-  int write_header = 1, missing_ok = 0, list_missing = 0, ignore_metadata = 0, threads = 0;
+  const char *index_path_arg = NULL;
+  const char *out_path = NULL;
+  const char *names_path = NULL;
+  const char *fmt_arg = NULL;
+  int write_header = 1;
+  int missing_ok = 0;
+  int list_missing = 0;
+  int ignore_metadata = 0;
+  int threads = 0;
   static const struct option long_opts[] = {{"index", required_argument, NULL, 'i'},
                                             {"output", required_argument, NULL, 'o'},
                                             {"output-format", required_argument, NULL, 'O'},
@@ -529,7 +568,8 @@ int bni_cmd_get(int argc, char **argv) {
       return 1;
     }
   }
-  const char *bam_path = NULL, *single_name = NULL;
+  const char *bam_path = NULL;
+  const char *single_name = NULL;
   if (names_path != NULL) {
     if (argc - optind != 1) {
       usage_get(stderr);
@@ -562,16 +602,18 @@ int bni_cmd_get(int argc, char **argv) {
   reader_opts.threads = threads;
   reader_opts.ignore_metadata = ignore_metadata;
   bni_reader_t *reader = NULL;
-  if (bni_reader_open(bam_path, index_path_arg, &reader_opts, &reader) != 0)
+  if (bni_reader_open(bam_path, index_path_arg, &reader_opts, &reader) != 0) {
     return 1;
+  }
   samFile *out = sam_open(out_path ? out_path : "-", mode_for_format(out_fmt));
   if (out == NULL) {
     bni_print_error("could not open output");
     bni_reader_close(reader);
     return 1;
   }
-  if (threads > 0 && hts_set_threads(out, threads) != 0)
+  if (threads > 0 && hts_set_threads(out, threads) != 0) {
     bni_print_warning("failed to enable output threads");
+  }
   if (write_header && sam_hdr_write(out, bni_reader_header(reader)) != 0) {
     bni_print_error("failed to write output header");
     sam_close(out);
@@ -583,28 +625,34 @@ int bni_cmd_get(int argc, char **argv) {
   int status = 0;
   uint64_t missing = 0;
   if (names_path != NULL) {
-    FILE *nf = strcmp(names_path, "-") == 0 ? stdin : fopen(names_path, "r");
+    int close_nf = strcmp(names_path, "-") != 0;
+    FILE *nf = close_nf ? fopen(names_path, "r") : stdin;
     if (nf == NULL) {
       bni_print_error("could not open name file %s: %s", names_path, strerror(errno));
       status = 1;
     } else {
       name_request_vec_t requests = {0, 0, 0};
-      if (load_name_requests(nf, reader, &requests, list_missing, &missing) != 0)
+      if (load_name_requests(nf, reader, &requests, list_missing, &missing) != 0 ||
+          fetch_name_requests(reader, &requests, &write_ctx, list_missing, &missing) != 0) {
         status = 1;
-      else if (fetch_name_requests(reader, &requests, &write_ctx, list_missing, &missing) != 0)
-        status = 1;
+      }
       name_request_vec_destroy(&requests);
-      if (nf != stdin)
+      if (close_nf) {
         fclose(nf);
+      }
     }
   } else {
     int ret = bni_reader_fetch(reader, single_name, write_record_callback, &write_ctx, NULL);
     if (ret > 0) {
-      if (list_missing)
+      if (list_missing) {
         fprintf(stderr, "%s\n", single_name);
+      }
       missing++;
-    } else if (ret < 0)
-      status = 1;
+    } else if (ret < 0) {
+      {
+        status = 1;
+      }
+    }
   }
   if (sam_close(out) != 0) {
     bni_print_error("failed closing output");
