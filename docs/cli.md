@@ -127,7 +127,7 @@ Usage:
 Options:
   -i, --index FILE           index file [default: <in.bam>.bni]
       --quick                check metadata only [default]
-      --full                 seek every indexed BGZF-block range and verify boundaries/counts
+      --full                 scan indexed BGZF-block ranges and verify boundaries/counts
   -@, --threads INT          decompression threads
   -h, --help                 show help
 ```

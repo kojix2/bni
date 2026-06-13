@@ -95,7 +95,7 @@ Lookup uses the first entry whose `last_qname >= target_qname`, seeks to
 - Input must be BGZF-compressed and seekable.
 - Input must be sorted with `samtools sort -N`.
 - CRAM input is not supported in BNIv2.
-- The full `.bni` file is currently loaded into memory.
+- Index entries are loaded into memory; the string table is mmap-backed when available.
 
 ## Acknowledgements
 

@@ -84,6 +84,10 @@ if (bni_load_index_file("reads.name.bam.bni", &idx) == 0) {
 }
 ```
 
+Loaded indexes keep decoded entries in memory. The string table is backed by
+`mmap()` when available, with an in-memory fallback, so callers should always
+release indexes with `bni_index_destroy()` or `bni_index_close()`.
+
 ## Fetch BAM Records
 
 ```c

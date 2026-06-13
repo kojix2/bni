@@ -63,6 +63,8 @@ $(STATIC_LIB): $(LIB_OBJ)
 $(SHARED_LIB): $(PIC_OBJ)
 	$(CC) $(LDFLAGS) $(SHARED_LDFLAGS) -o $@ $(PIC_OBJ) $(LDLIBS)
 
+$(LIB_OBJ) $(CLI_OBJ) $(PIC_OBJ): include/bni.h src/bni_internal.h
+
 .c.o:
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 

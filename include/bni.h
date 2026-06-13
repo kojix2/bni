@@ -59,6 +59,9 @@ typedef struct {
   bni_file_header_t header;
   bni_entry_t *entries;
   char *strings;
+  void *mapping;
+  size_t mapping_size;
+  int owns_strings;
 } bni_index_t;
 
 typedef struct {

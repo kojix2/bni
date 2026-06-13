@@ -5,11 +5,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include <sys/types.h>
 
 #define BNI_ENTRY_WRITE_CHUNK 8192u
 
 enum {
+  BNI_DEFAULT_MMAP_PAGE_SIZE = 4096,
   BNI_BITS_PER_BYTE = 8,
   BNI_U64_BYTES = 8,
   BNI_U8_MASK = 0xffU,
@@ -257,6 +262,25 @@ static int read_index_header(FILE *fp, const char *path, bni_file_header_t *head
   return 0;
 }
 
+static int validate_index_file_size(FILE *fp, const char *path, const bni_file_header_t *header) {
+  if (fseeko(fp, 0, SEEK_END) != 0) {
+    bni_print_error("failed seeking to end of %s", path);
+    return -1;
+  }
+  off_t end_pos = ftello(fp);
+  if (end_pos < 0) {
+    bni_print_error("failed determining size of %s", path);
+    return -1;
+  }
+  uint64_t file_size = (uint64_t)end_pos;
+  if (header->strings_offset > UINT64_MAX - header->strings_size ||
+      header->strings_offset + header->strings_size > file_size) {
+    bni_print_error("index string table extends past end of %s", path);
+    return -1;
+  }
+  return 0;
+}
+
 static int read_index_entries(FILE *fp, const char *path, bni_index_t *idx) {
   if (idx->header.n_blocks > 0) {
     idx->entries = (bni_entry_t *)calloc((size_t)idx->header.n_blocks, sizeof(bni_entry_t));
@@ -281,11 +305,16 @@ static int read_index_entries(FILE *fp, const char *path, bni_index_t *idx) {
 }
 
 static int read_index_strings(FILE *fp, const char *path, bni_index_t *idx) {
+  if (idx->header.strings_size > SIZE_MAX - 1) {
+    bni_print_error("index string table is too large for this platform");
+    return -1;
+  }
   idx->strings = (char *)calloc((size_t)idx->header.strings_size + 1, 1);
   if (idx->strings == NULL) {
     bni_print_error("out of memory while loading string table");
     return -1;
   }
+  idx->owns_strings = 1;
   if (idx->header.strings_size == 0) {
     return 0;
   }
@@ -298,6 +327,46 @@ static int read_index_strings(FILE *fp, const char *path, bni_index_t *idx) {
     return -1;
   }
   return 0;
+}
+
+static int map_index_strings(FILE *fp, bni_index_t *idx) {
+#ifdef _WIN32
+  (void)fp;
+  (void)idx;
+  return -1;
+#else
+  if (idx->header.strings_size == 0) {
+    return 0;
+  }
+  long page_size_long = sysconf(_SC_PAGE_SIZE);
+  size_t page_size =
+      page_size_long > 0 ? (size_t)page_size_long : (size_t)BNI_DEFAULT_MMAP_PAGE_SIZE;
+  uint64_t map_offset = idx->header.strings_offset - (idx->header.strings_offset % page_size);
+  uint64_t map_delta = idx->header.strings_offset - map_offset;
+  if (map_delta > SIZE_MAX || idx->header.strings_size > SIZE_MAX - (size_t)map_delta) {
+    return -1;
+  }
+  size_t map_size = (size_t)map_delta + (size_t)idx->header.strings_size;
+  if (map_offset > (uint64_t)INT64_MAX) {
+    return -1;
+  }
+  void *mapping = mmap(NULL, map_size, PROT_READ, MAP_PRIVATE, fileno(fp), (off_t)map_offset);
+  if (mapping == MAP_FAILED) {
+    return -1;
+  }
+  idx->mapping = mapping;
+  idx->mapping_size = map_size;
+  idx->strings = (char *)mapping + (size_t)map_delta;
+  idx->owns_strings = 0;
+  return 0;
+#endif
+}
+
+static int load_index_strings(FILE *fp, const char *path, bni_index_t *idx) {
+  if (map_index_strings(fp, idx) == 0) {
+    return 0;
+  }
+  return read_index_strings(fp, path, idx);
 }
 
 static int validate_index_entry(const bni_index_t *idx, uint64_t entry_i) {
@@ -357,8 +426,10 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
     bni_print_error("could not open %s: %s", path, strerror(errno));
     return -1;
   }
-  if (read_index_header(fp, path, &idx->header) != 0 || read_index_entries(fp, path, idx) != 0 ||
-      read_index_strings(fp, path, idx) != 0 || validate_index_entries(idx) != 0) {
+  if (read_index_header(fp, path, &idx->header) != 0 ||
+      validate_index_file_size(fp, path, &idx->header) != 0 ||
+      read_index_entries(fp, path, idx) != 0 || load_index_strings(fp, path, idx) != 0 ||
+      validate_index_entries(idx) != 0) {
     bni_index_destroy(idx);
     close_ignoring_error(fp);
     return -1;
@@ -376,7 +447,13 @@ void bni_index_destroy(bni_index_t *idx) {
     return;
   }
   free(idx->entries);
-  free(idx->strings);
+  if (idx->mapping != NULL) {
+#ifndef _WIN32
+    munmap(idx->mapping, idx->mapping_size);
+#endif
+  } else if (idx->owns_strings) {
+    free(idx->strings);
+  }
   memset(idx, 0, sizeof(*idx));
 }
 
