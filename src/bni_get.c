@@ -139,6 +139,67 @@ struct bni_reader_t {
   bam1_t *record;
 };
 
+static int resolve_reader_index_path(const char *bam_path, const char *index_path,
+                                     char **default_index_out, const char **resolved_path_out) {
+  *default_index_out = NULL;
+  *resolved_path_out = index_path;
+  if (index_path != NULL) {
+    return 0;
+  }
+
+  *default_index_out = bni_default_index_path(bam_path);
+  if (*default_index_out == NULL) {
+    bni_print_error("out of memory while building default index path");
+    return -1;
+  }
+  *resolved_path_out = *default_index_out;
+  return 0;
+}
+
+static int open_reader_alignment(bni_reader_t *reader, const char *bam_path, int threads) {
+  reader->in = sam_open(bam_path, "r");
+  if (reader->in == NULL) {
+    bni_print_error("could not open %s", bam_path);
+    return -1;
+  }
+  if (threads > 0 && hts_set_threads(reader->in, threads) != 0) {
+    bni_print_warning("failed to enable input threads");
+  }
+  reader->hdr = sam_hdr_read(reader->in);
+  if (reader->hdr == NULL) {
+    bni_print_error("failed to read BAM header from %s", bam_path);
+    return -1;
+  }
+  return 0;
+}
+
+static int validate_reader_alignment(bni_reader_t *reader, const char *bam_path,
+                                     int ignore_metadata) {
+  const htsFormat *fmt = hts_get_format(reader->in);
+  if (fmt != NULL && fmt->format != bam) {
+    bni_print_error("input is not BAM; bni supports BGZF-compressed BAM only");
+    return -1;
+  }
+  if (!ignore_metadata && check_metadata(&reader->idx, bam_path, reader->hdr) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+static int init_reader_random_access(bni_reader_t *reader) {
+  reader->bgzf_fp = hts_get_bgzfp(reader->in);
+  if (reader->bgzf_fp == NULL) {
+    bni_print_error("failed to access BGZF handle");
+    return -1;
+  }
+  reader->record = bam_init1();
+  if (reader->record == NULL) {
+    bni_print_error("failed to allocate BAM record");
+    return -1;
+  }
+  return 0;
+}
+
 int bni_reader_open(const char *bam_path, const char *index_path, const bni_reader_options_t *opts,
                     bni_reader_t **reader_out) {
   int threads = opts ? opts->threads : 0;
@@ -154,14 +215,9 @@ int bni_reader_open(const char *bam_path, const char *index_path, const bni_read
   }
 
   char *default_index = NULL;
-  const char *resolved_index_path = index_path;
-  if (resolved_index_path == NULL) {
-    default_index = bni_default_index_path(bam_path);
-    if (default_index == NULL) {
-      bni_print_error("out of memory while building default index path");
-      return -1;
-    }
-    resolved_index_path = default_index;
+  const char *resolved_index_path = NULL;
+  if (resolve_reader_index_path(bam_path, index_path, &default_index, &resolved_index_path) != 0) {
+    return -1;
   }
 
   bni_reader_t *reader = (bni_reader_t *)calloc(1, sizeof(*reader));
@@ -173,35 +229,13 @@ int bni_reader_open(const char *bam_path, const char *index_path, const bni_read
   if (bni_load_index_file(resolved_index_path, &reader->idx) != 0) {
     goto fail;
   }
-  reader->in = sam_open(bam_path, "r");
-  if (reader->in == NULL) {
-    bni_print_error("could not open %s", bam_path);
+  if (open_reader_alignment(reader, bam_path, threads) != 0) {
     goto fail;
   }
-  if (threads > 0 && hts_set_threads(reader->in, threads) != 0) {
-    bni_print_warning("failed to enable input threads");
-  }
-  reader->hdr = sam_hdr_read(reader->in);
-  if (reader->hdr == NULL) {
-    bni_print_error("failed to read BAM header from %s", bam_path);
+  if (validate_reader_alignment(reader, bam_path, ignore_metadata) != 0) {
     goto fail;
   }
-  const htsFormat *fmt = hts_get_format(reader->in);
-  if (fmt != NULL && fmt->format != bam) {
-    bni_print_error("input is not BAM; bni supports BGZF-compressed BAM only");
-    goto fail;
-  }
-  if (!ignore_metadata && check_metadata(&reader->idx, bam_path, reader->hdr) != 0) {
-    goto fail;
-  }
-  reader->bgzf_fp = hts_get_bgzfp(reader->in);
-  if (reader->bgzf_fp == NULL) {
-    bni_print_error("failed to access BGZF handle");
-    goto fail;
-  }
-  reader->record = bam_init1();
-  if (reader->record == NULL) {
-    bni_print_error("failed to allocate BAM record");
+  if (init_reader_random_access(reader) != 0) {
     goto fail;
   }
 
@@ -387,6 +421,17 @@ static void dedupe_name_requests(name_request_vec_t *v) {
   v->len = out;
 }
 
+static void report_missing_request(name_request_t *request, int list_missing,
+                                   uint64_t *missing_out) {
+  if (request->found) {
+    return;
+  }
+  if (list_missing) {
+    (void)fprintf(stderr, "%s\n", request->name);
+  }
+  (*missing_out)++;
+}
+
 static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t *requests,
                               int list_missing, uint64_t *missing_out) {
   char *line = NULL;
@@ -426,6 +471,78 @@ static int load_name_requests(FILE *nf, bni_reader_t *reader, name_request_vec_t
   return status;
 }
 
+static size_t name_request_group_end(const name_request_vec_t *requests, size_t group_beg) {
+  uint64_t entry_index = requests->data[group_beg].entry_index;
+  size_t group_end = group_beg + 1;
+  while (group_end < requests->len && requests->data[group_end].entry_index == entry_index) {
+    group_end++;
+  }
+  return group_end;
+}
+
+static size_t mark_missing_before_qname(name_request_vec_t *requests, size_t target,
+                                        size_t group_end, const char *qname, int list_missing,
+                                        uint64_t *missing_out) {
+  while (target < group_end && strcmp(requests->data[target].name, qname) < 0) {
+    report_missing_request(&requests->data[target], list_missing, missing_out);
+    target++;
+  }
+  return target;
+}
+
+static void mark_remaining_missing(name_request_vec_t *requests, size_t target, size_t group_end,
+                                   int list_missing, uint64_t *missing_out) {
+  while (target < group_end) {
+    report_missing_request(&requests->data[target], list_missing, missing_out);
+    target++;
+  }
+}
+
+static int fetch_name_request_group(bni_reader_t *reader, name_request_vec_t *requests,
+                                    size_t group_beg, size_t group_end, write_context_t *write_ctx,
+                                    int list_missing, uint64_t *missing_out) {
+  const bni_entry_t *entry = &reader->idx.entries[requests->data[group_beg].entry_index];
+  if (bgzf_seek(reader->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) {
+    bni_print_error("bgzf_seek failed for indexed name batch");
+    return -1;
+  }
+
+  size_t target = group_beg;
+  const char *last_target = requests->data[group_end - 1].name;
+  for (;;) {
+    int ret = sam_read1(reader->in, reader->hdr, reader->record);
+    if (ret < 0) {
+      if (ret < -1) {
+        bni_print_error("error while reading BAM while fetching requested names");
+        return -1;
+      }
+      break;
+    }
+    const char *qname = bam_get_qname(reader->record);
+    if (qname == NULL) {
+      bni_print_error("encountered record with NULL QNAME while fetching requested names");
+      return -1;
+    }
+
+    if (strcmp(qname, last_target) > 0) {
+      break;
+    }
+    target =
+        mark_missing_before_qname(requests, target, group_end, qname, list_missing, missing_out);
+    if (target == group_end) {
+      break;
+    }
+    if (strcmp(qname, requests->data[target].name) == 0) {
+      requests->data[target].found = 1;
+      if (write_record_callback(reader->record, reader->hdr, write_ctx) != 0) {
+        return -1;
+      }
+    }
+  }
+  mark_remaining_missing(requests, target, group_end, list_missing, missing_out);
+  return 0;
+}
+
 static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *requests,
                                write_context_t *write_ctx, int list_missing,
                                uint64_t *missing_out) {
@@ -437,66 +554,10 @@ static int fetch_name_requests(bni_reader_t *reader, name_request_vec_t *request
 
   size_t group_beg = 0;
   while (group_beg < requests->len) {
-    uint64_t entry_index = requests->data[group_beg].entry_index;
-    size_t group_end = group_beg + 1;
-    while (group_end < requests->len && requests->data[group_end].entry_index == entry_index) {
-      group_end++;
-    }
-
-    const bni_entry_t *entry = &reader->idx.entries[entry_index];
-    if (bgzf_seek(reader->bgzf_fp, (int64_t)entry->beg_voff, SEEK_SET) < 0) {
-      bni_print_error("bgzf_seek failed for indexed name batch");
+    size_t group_end = name_request_group_end(requests, group_beg);
+    if (fetch_name_request_group(reader, requests, group_beg, group_end, write_ctx, list_missing,
+                                 missing_out) != 0) {
       return -1;
-    }
-
-    size_t target = group_beg;
-    const char *last_target = requests->data[group_end - 1].name;
-    for (;;) {
-      int ret = sam_read1(reader->in, reader->hdr, reader->record);
-      if (ret < 0) {
-        if (ret < -1) {
-          bni_print_error("error while reading BAM while fetching requested names");
-          return -1;
-        }
-        break;
-      }
-      const char *qname = bam_get_qname(reader->record);
-      if (qname == NULL) {
-        bni_print_error("encountered record with NULL QNAME while fetching requested names");
-        return -1;
-      }
-
-      if (strcmp(qname, last_target) > 0) {
-        break;
-      }
-      while (target < group_end && strcmp(requests->data[target].name, qname) < 0) {
-        if (!requests->data[target].found) {
-          if (list_missing) {
-            (void)fprintf(stderr, "%s\n", requests->data[target].name);
-          }
-          (*missing_out)++;
-        }
-        target++;
-      }
-      if (target == group_end) {
-        break;
-      }
-      if (strcmp(qname, requests->data[target].name) == 0) {
-        requests->data[target].found = 1;
-        if (write_record_callback(reader->record, reader->hdr, write_ctx) != 0) {
-          return -1;
-        }
-      }
-    }
-
-    while (target < group_end) {
-      if (!requests->data[target].found) {
-        if (list_missing) {
-          (void)fprintf(stderr, "%s\n", requests->data[target].name);
-        }
-        (*missing_out)++;
-      }
-      target++;
     }
     group_beg = group_end;
   }

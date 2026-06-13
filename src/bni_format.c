@@ -239,6 +239,117 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
   return 0;
 }
 
+static int read_index_header(FILE *fp, const char *path, bni_file_header_t *header) {
+  unsigned char hbuf[BNI_HEADER_SIZE];
+  if (read_exact(fp, hbuf, sizeof(hbuf)) != 0) {
+    bni_print_error("failed reading BNI header from %s", path);
+    return -1;
+  }
+  if (decode_header(hbuf, header) != 0 || validate_header(header) != 0) {
+    bni_print_error("%s is not a valid BNI v2 BGZF-block index", path);
+    return -1;
+  }
+  uint64_t entry_bytes_u64 = header->n_blocks * (uint64_t)BNI_ENTRY_SIZE;
+  if (entry_bytes_u64 > SIZE_MAX || header->strings_size > SIZE_MAX - 1) {
+    bni_print_error("index is too large for this platform");
+    return -1;
+  }
+  return 0;
+}
+
+static int read_index_entries(FILE *fp, const char *path, bni_index_t *idx) {
+  if (idx->header.n_blocks > 0) {
+    idx->entries = (bni_entry_t *)calloc((size_t)idx->header.n_blocks, sizeof(bni_entry_t));
+    if (idx->entries == NULL) {
+      bni_print_error("out of memory while loading entries");
+      return -1;
+    }
+  }
+  if (fseeko(fp, (off_t)idx->header.entries_offset, SEEK_SET) != 0) {
+    bni_print_error("failed seeking to entries in %s", path);
+    return -1;
+  }
+  unsigned char ebuf[BNI_ENTRY_SIZE];
+  for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
+    if (read_exact(fp, ebuf, sizeof(ebuf)) != 0) {
+      bni_print_error("failed reading entry from %s", path);
+      return -1;
+    }
+    decode_entry(ebuf, &idx->entries[i]);
+  }
+  return 0;
+}
+
+static int read_index_strings(FILE *fp, const char *path, bni_index_t *idx) {
+  idx->strings = (char *)calloc((size_t)idx->header.strings_size + 1, 1);
+  if (idx->strings == NULL) {
+    bni_print_error("out of memory while loading string table");
+    return -1;
+  }
+  if (idx->header.strings_size == 0) {
+    return 0;
+  }
+  if (fseeko(fp, (off_t)idx->header.strings_offset, SEEK_SET) != 0) {
+    bni_print_error("failed seeking to string table in %s", path);
+    return -1;
+  }
+  if (read_exact(fp, idx->strings, (size_t)idx->header.strings_size) != 0) {
+    bni_print_error("failed reading string table from %s", path);
+    return -1;
+  }
+  return 0;
+}
+
+static int validate_index_entry(const bni_index_t *idx, uint64_t entry_i) {
+  const bni_entry_t *e = &idx->entries[entry_i];
+  const char *first = string_at_checked(idx, e->first_name_offset, entry_i, "first");
+  const char *last = string_at_checked(idx, e->last_name_offset, entry_i, "last");
+  if (first == NULL || last == NULL) {
+    return -1;
+  }
+  if (strcmp(first, last) > 0) {
+    bni_print_error("entry %" PRIu64 " has first QNAME greater than last QNAME", entry_i);
+    return -1;
+  }
+  if (e->beg_voff >= e->end_voff) {
+    bni_print_error("entry %" PRIu64 " has an empty virtual-offset range", entry_i);
+    return -1;
+  }
+  if (e->n_records == 0) {
+    bni_print_error("entry %" PRIu64 " has zero records", entry_i);
+    return -1;
+  }
+  if (entry_i == 0) {
+    return 0;
+  }
+
+  const bni_entry_t *prev_e = &idx->entries[entry_i - 1];
+  const char *prev_first = bni_entry_first_name(idx, prev_e);
+  const char *prev_last = bni_entry_last_name(idx, prev_e);
+  if (strcmp(prev_first, first) > 0) {
+    bni_print_error("entries are not sorted by first QNAME");
+    return -1;
+  }
+  if (strcmp(prev_last, last) > 0) {
+    bni_print_error("entries are not sorted by last QNAME");
+    return -1;
+  }
+  if (prev_e->end_voff > e->beg_voff) {
+    bni_print_error("entries have overlapping virtual-offset ranges");
+    return -1;
+  }
+  return 0;
+}
+
+static int validate_index_entries(const bni_index_t *idx) {
+  for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
+    if (validate_index_entry(idx, i) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
 int bni_load_index_file(const char *path, bni_index_t *idx) {
   memset(idx, 0, sizeof(*idx));
   FILE *fp = fopen(path, "rb");
@@ -246,118 +357,11 @@ int bni_load_index_file(const char *path, bni_index_t *idx) {
     bni_print_error("could not open %s: %s", path, strerror(errno));
     return -1;
   }
-  unsigned char hbuf[BNI_HEADER_SIZE];
-  if (read_exact(fp, hbuf, sizeof(hbuf)) != 0) {
-    bni_print_error("failed reading BNI header from %s", path);
-    close_ignoring_error(fp);
-    return -1;
-  }
-  if (decode_header(hbuf, &idx->header) != 0 || validate_header(&idx->header) != 0) {
-    bni_print_error("%s is not a valid BNI v2 BGZF-block index", path);
-    close_ignoring_error(fp);
-    return -1;
-  }
-  uint64_t entry_bytes_u64 = idx->header.n_blocks * (uint64_t)BNI_ENTRY_SIZE;
-  if (entry_bytes_u64 > SIZE_MAX || idx->header.strings_size > SIZE_MAX - 1) {
-    bni_print_error("index is too large for this platform");
-    close_ignoring_error(fp);
-    return -1;
-  }
-  if (idx->header.n_blocks > 0) {
-    idx->entries = (bni_entry_t *)calloc((size_t)idx->header.n_blocks, sizeof(bni_entry_t));
-    if (idx->entries == NULL) {
-      bni_print_error("out of memory while loading entries");
-      close_ignoring_error(fp);
-      return -1;
-    }
-  }
-  if (fseeko(fp, (off_t)idx->header.entries_offset, SEEK_SET) != 0) {
-    bni_print_error("failed seeking to entries in %s", path);
+  if (read_index_header(fp, path, &idx->header) != 0 || read_index_entries(fp, path, idx) != 0 ||
+      read_index_strings(fp, path, idx) != 0 || validate_index_entries(idx) != 0) {
     bni_index_destroy(idx);
     close_ignoring_error(fp);
     return -1;
-  }
-  unsigned char ebuf[BNI_ENTRY_SIZE];
-  for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
-    if (read_exact(fp, ebuf, sizeof(ebuf)) != 0) {
-      bni_print_error("failed reading entry from %s", path);
-      bni_index_destroy(idx);
-      close_ignoring_error(fp);
-      return -1;
-    }
-    decode_entry(ebuf, &idx->entries[i]);
-  }
-  idx->strings = (char *)calloc((size_t)idx->header.strings_size + 1, 1);
-  if (idx->strings == NULL) {
-    bni_print_error("out of memory while loading string table");
-    bni_index_destroy(idx);
-    close_ignoring_error(fp);
-    return -1;
-  }
-  if (idx->header.strings_size > 0) {
-    if (fseeko(fp, (off_t)idx->header.strings_offset, SEEK_SET) != 0) {
-      bni_print_error("failed seeking to string table in %s", path);
-      bni_index_destroy(idx);
-      close_ignoring_error(fp);
-      return -1;
-    }
-    if (read_exact(fp, idx->strings, (size_t)idx->header.strings_size) != 0) {
-      bni_print_error("failed reading string table from %s", path);
-      bni_index_destroy(idx);
-      close_ignoring_error(fp);
-      return -1;
-    }
-  }
-  for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
-    const bni_entry_t *e = &idx->entries[i];
-    const char *first = string_at_checked(idx, e->first_name_offset, i, "first");
-    const char *last = string_at_checked(idx, e->last_name_offset, i, "last");
-    if (first == NULL || last == NULL) {
-      bni_index_destroy(idx);
-      close_ignoring_error(fp);
-      return -1;
-    }
-    if (strcmp(first, last) > 0) {
-      bni_print_error("entry %" PRIu64 " has first QNAME greater than last QNAME", i);
-      bni_index_destroy(idx);
-      close_ignoring_error(fp);
-      return -1;
-    }
-    if (e->beg_voff >= e->end_voff) {
-      bni_print_error("entry %" PRIu64 " has an empty virtual-offset range", i);
-      bni_index_destroy(idx);
-      close_ignoring_error(fp);
-      return -1;
-    }
-    if (e->n_records == 0) {
-      bni_print_error("entry %" PRIu64 " has zero records", i);
-      bni_index_destroy(idx);
-      close_ignoring_error(fp);
-      return -1;
-    }
-    if (i > 0) {
-      const bni_entry_t *prev_e = &idx->entries[i - 1];
-      const char *prev_first = bni_entry_first_name(idx, prev_e);
-      const char *prev_last = bni_entry_last_name(idx, prev_e);
-      if (strcmp(prev_first, first) > 0) {
-        bni_print_error("entries are not sorted by first QNAME");
-        bni_index_destroy(idx);
-        close_ignoring_error(fp);
-        return -1;
-      }
-      if (strcmp(prev_last, last) > 0) {
-        bni_print_error("entries are not sorted by last QNAME");
-        bni_index_destroy(idx);
-        close_ignoring_error(fp);
-        return -1;
-      }
-      if (prev_e->end_voff > e->beg_voff) {
-        bni_print_error("entries have overlapping virtual-offset ranges");
-        bni_index_destroy(idx);
-        close_ignoring_error(fp);
-        return -1;
-      }
-    }
   }
   if (fclose(fp) != 0) {
     bni_print_error("failed closing %s: %s", path, strerror(errno));
