@@ -178,19 +178,20 @@ static int validate_header(const bni_file_header_t *h) {
   return 0;
 }
 
-static const char *string_at_checked(const bni_index_t *idx, uint64_t off, uint64_t entry_i,
-                                     const char *which) {
-  if (off >= idx->header.strings_size) {
-    bni_print_error("invalid %s name offset in entry %" PRIu64, which, entry_i);
-    return NULL;
+static int validate_string_table_bounds(const bni_index_t *idx) {
+  if (idx->header.n_blocks == 0) {
+    return 0;
   }
-  const char *name = idx->strings + off;
-  size_t max_len = (size_t)(idx->header.strings_size - off);
-  if (memchr(name, '\0', max_len) == NULL) {
-    bni_print_error("unterminated %s name in entry %" PRIu64, which, entry_i);
-    return NULL;
+  if (idx->header.strings_size == 0 || idx->strings == NULL) {
+    bni_print_error("index entries require a non-empty string table");
+    return -1;
   }
-  return name;
+  // NOLINTNEXTLINE(clang-analyzer-security.ArrayBound)
+  if (idx->strings[idx->header.strings_size - 1] != '\0') {
+    bni_print_error("index string table is not NUL-terminated");
+    return -1;
+  }
+  return 0;
 }
 
 int bni_write_index_file(const char *path, const bni_file_header_t *header,
@@ -371,13 +372,12 @@ static int load_index_strings(FILE *fp, const char *path, bni_index_t *idx) {
 
 static int validate_index_entry(const bni_index_t *idx, uint64_t entry_i) {
   const bni_entry_t *e = &idx->entries[entry_i];
-  const char *first = string_at_checked(idx, e->first_name_offset, entry_i, "first");
-  const char *last = string_at_checked(idx, e->last_name_offset, entry_i, "last");
-  if (first == NULL || last == NULL) {
+  if (e->first_name_offset >= idx->header.strings_size) {
+    bni_print_error("invalid first name offset in entry %" PRIu64, entry_i);
     return -1;
   }
-  if (strcmp(first, last) > 0) {
-    bni_print_error("entry %" PRIu64 " has first QNAME greater than last QNAME", entry_i);
+  if (e->last_name_offset >= idx->header.strings_size) {
+    bni_print_error("invalid last name offset in entry %" PRIu64, entry_i);
     return -1;
   }
   if (e->beg_voff >= e->end_voff) {
@@ -393,16 +393,6 @@ static int validate_index_entry(const bni_index_t *idx, uint64_t entry_i) {
   }
 
   const bni_entry_t *prev_e = &idx->entries[entry_i - 1];
-  const char *prev_first = bni_entry_first_name(idx, prev_e);
-  const char *prev_last = bni_entry_last_name(idx, prev_e);
-  if (strcmp(prev_first, first) > 0) {
-    bni_print_error("entries are not sorted by first QNAME");
-    return -1;
-  }
-  if (strcmp(prev_last, last) > 0) {
-    bni_print_error("entries are not sorted by last QNAME");
-    return -1;
-  }
   if (prev_e->end_voff > e->beg_voff) {
     bni_print_error("entries have overlapping virtual-offset ranges");
     return -1;
@@ -411,6 +401,9 @@ static int validate_index_entry(const bni_index_t *idx, uint64_t entry_i) {
 }
 
 static int validate_index_entries(const bni_index_t *idx) {
+  if (validate_string_table_bounds(idx) != 0) {
+    return -1;
+  }
   for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
     if (validate_index_entry(idx, i) != 0) {
       return -1;
