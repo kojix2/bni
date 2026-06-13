@@ -16,7 +16,7 @@
 #define BNI_API
 #endif
 
-#define BNI_VERSION_STRING "0.0.2"
+#define BNI_VERSION_STRING "0.0.3"
 
 #define BNI_MAGIC0 'B'
 #define BNI_MAGIC1 'N'
