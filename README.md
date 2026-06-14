@@ -1,12 +1,15 @@
 # bni
 
+[![CI](https://github.com/kojix2/bni/actions/workflows/ci.yml/badge.svg)](https://github.com/kojix2/bni/actions/workflows/ci.yml)
+[![Lines of Code](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2Fkojix2%2Fbni%2Flines)](https://tokei.kojix2.net/github/kojix2/bni)
+
 `bni` builds and queries a read-name index for BAM files sorted with
 `samtools sort -N`.
 
 ## Status
 
 - Prototype C implementation
-- File format: `BNIv2`
+- File format: [BNIv2](docs/format.md)
 - Input: BGZF-compressed BAM
 - Required sort order: `queryname:lexicographical`
 
