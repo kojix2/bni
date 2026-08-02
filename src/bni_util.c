@@ -71,7 +71,11 @@ int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out,
   }
   if (mtime_nsec_out) {
 #if defined(__APPLE__)
+#if defined(_DARWIN_C_SOURCE) || !defined(_POSIX_C_SOURCE)
     *mtime_nsec_out = (uint32_t)st.st_mtimespec.tv_nsec;
+#else
+    *mtime_nsec_out = (uint32_t)st.st_mtimensec;
+#endif
 #else
     *mtime_nsec_out = (uint32_t)st.st_mtim.tv_nsec;
 #endif

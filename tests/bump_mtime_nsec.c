@@ -18,7 +18,12 @@ int main(int argc, char **argv) {
     return 1;
   }
 #if defined(__APPLE__)
+#if defined(_DARWIN_C_SOURCE) || !defined(_POSIX_C_SOURCE)
   struct timespec times[2] = {before.st_atimespec, before.st_mtimespec};
+#else
+  struct timespec times[2] = {{before.st_atime, before.st_atimensec},
+                               {before.st_mtime, before.st_mtimensec}};
+#endif
 #else
   struct timespec times[2] = {before.st_atim, before.st_mtim};
 #endif
@@ -34,8 +39,13 @@ int main(int argc, char **argv) {
     return 1;
   }
 #if defined(__APPLE__)
+#if defined(_DARWIN_C_SOURCE) || !defined(_POSIX_C_SOURCE)
   long before_nsec = before.st_mtimespec.tv_nsec;
   long after_nsec = after.st_mtimespec.tv_nsec;
+#else
+  long before_nsec = before.st_mtimensec;
+  long after_nsec = after.st_mtimensec;
+#endif
 #else
   long before_nsec = before.st_mtim.tv_nsec;
   long after_nsec = after.st_mtim.tv_nsec;
