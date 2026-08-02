@@ -1,6 +1,7 @@
 #include "bni_internal.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,7 @@
 
 enum {
   BNI_DEFAULT_MMAP_PAGE_SIZE = 4096,
+  BNI_TEMP_CREATE_ATTEMPTS = 100,
   BNI_BITS_PER_BYTE = 8,
   BNI_U64_BYTES = 8,
   BNI_U8_MASK = 0xffU,
@@ -194,18 +196,12 @@ static int validate_string_table_bounds(const bni_index_t *idx) {
   return 0;
 }
 
-int bni_write_index_file(const char *path, const bni_file_header_t *header,
-                         const bni_entry_t *entries, const char *strings) {
-  FILE *fp = fopen(path, "wb");
-  if (fp == NULL) {
-    bni_print_error("could not open %s for writing: %s", path, strerror(errno));
-    return -1;
-  }
+static int write_index_contents(FILE *fp, const char *path, const bni_file_header_t *header,
+                                const bni_entry_t *entries, const char *strings) {
   unsigned char hbuf[BNI_HEADER_SIZE];
   encode_header(hbuf, header);
   if (write_exact(fp, hbuf, sizeof(hbuf)) != 0) {
     bni_print_error("failed writing BNI header to %s", path);
-    close_ignoring_error(fp);
     return -1;
   }
   unsigned char *ebuf = NULL;
@@ -213,7 +209,6 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
     ebuf = (unsigned char *)malloc((size_t)BNI_ENTRY_WRITE_CHUNK * (size_t)BNI_ENTRY_SIZE);
     if (ebuf == NULL) {
       bni_print_error("out of memory while writing BNI entries");
-      close_ignoring_error(fp);
       return -1;
     }
   }
@@ -227,7 +222,6 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
     if (write_exact(fp, ebuf, n_entries * (size_t)BNI_ENTRY_SIZE) != 0) {
       bni_print_error("failed writing BNI entries to %s", path);
       free(ebuf);
-      close_ignoring_error(fp);
       return -1;
     }
     i += (uint64_t)n_entries;
@@ -235,14 +229,107 @@ int bni_write_index_file(const char *path, const bni_file_header_t *header,
   free(ebuf);
   if (header->strings_size > 0 && write_exact(fp, strings, (size_t)header->strings_size) != 0) {
     bni_print_error("failed writing BNI string table to %s", path);
-    close_ignoring_error(fp);
-    return -1;
-  }
-  if (fclose(fp) != 0) {
-    bni_print_error("failed closing %s: %s", path, strerror(errno));
     return -1;
   }
   return 0;
+}
+
+static int create_index_temp(const char *path, char **temp_path_out) {
+  static const char suffix_format[] = ".tmp.%ld.%u";
+  size_t path_len = strlen(path);
+  if (path_len > SIZE_MAX - sizeof(suffix_format) - 32) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  size_t temp_path_size = path_len + sizeof(suffix_format) + 32;
+  char *temp_path = (char *)malloc(temp_path_size);
+  if (temp_path == NULL) {
+    errno = ENOMEM;
+    return -1;
+  }
+
+  for (unsigned int attempt = 0; attempt < BNI_TEMP_CREATE_ATTEMPTS; ++attempt) {
+    (void)snprintf(temp_path, temp_path_size, "%s.tmp.%ld.%u", path, (long)getpid(), attempt);
+    int fd = open(temp_path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (fd >= 0) {
+      *temp_path_out = temp_path;
+      return fd;
+    }
+    if (errno != EEXIST) {
+      break;
+    }
+  }
+  int saved_errno = errno;
+  free(temp_path);
+  errno = saved_errno;
+  return -1;
+}
+
+static int publish_index_temp(const char *temp_path, const char *path, int replace) {
+  if (replace) {
+    return rename(temp_path, path);
+  }
+  if (link(temp_path, path) != 0) {
+    return -1;
+  }
+  if (unlink(temp_path) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+static int write_index_file_atomic(const char *path, const bni_file_header_t *header,
+                                   const bni_entry_t *entries, const char *strings, int replace) {
+  char *temp_path = NULL;
+  int fd = create_index_temp(path, &temp_path);
+  if (fd < 0) {
+    bni_print_error("could not create temporary index for %s: %s", path, strerror(errno));
+    return -1;
+  }
+  FILE *fp = fdopen(fd, "wb");
+  if (fp == NULL) {
+    int saved_errno = errno;
+    (void)close(fd);
+    (void)unlink(temp_path);
+    bni_print_error("could not open temporary index for %s: %s", path, strerror(saved_errno));
+    free(temp_path);
+    return -1;
+  }
+
+  int status = write_index_contents(fp, path, header, entries, strings);
+  if (status == 0 && fflush(fp) != 0) {
+    bni_print_error("failed flushing temporary index for %s: %s", path, strerror(errno));
+    status = -1;
+  }
+  if (status == 0 && fsync(fileno(fp)) != 0) {
+    bni_print_error("failed syncing temporary index for %s: %s", path, strerror(errno));
+    status = -1;
+  }
+  if (fclose(fp) != 0) {
+    if (status == 0) {
+      bni_print_error("failed closing temporary index for %s: %s", path, strerror(errno));
+    }
+    status = -1;
+  }
+  if (status == 0 && publish_index_temp(temp_path, path, replace) != 0) {
+    bni_print_error("failed publishing index %s: %s", path, strerror(errno));
+    status = -1;
+  }
+  if (status != 0) {
+    (void)unlink(temp_path);
+  }
+  free(temp_path);
+  return status;
+}
+
+int bni_write_index_file(const char *path, const bni_file_header_t *header,
+                         const bni_entry_t *entries, const char *strings) {
+  return write_index_file_atomic(path, header, entries, strings, 1);
+}
+
+int bni_write_index_file_exclusive(const char *path, const bni_file_header_t *header,
+                                   const bni_entry_t *entries, const char *strings) {
+  return write_index_file_atomic(path, header, entries, strings, 0);
 }
 
 static int read_index_header(FILE *fp, const char *path, bni_file_header_t *header) {

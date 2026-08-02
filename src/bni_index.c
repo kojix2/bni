@@ -507,7 +507,10 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   bni_file_header_t header;
   init_index_header(&header, &scan, &input, bam_size, bam_mtime);
   const char *string_table = scan.strings.data ? scan.strings.data : "";
-  if (bni_write_index_file(out_path, &header, scan.entries.data, string_table) != 0) {
+  int write_status = force ? bni_write_index_file(out_path, &header, scan.entries.data, string_table)
+                           : bni_write_index_file_exclusive(out_path, &header, scan.entries.data,
+                                                           string_table);
+  if (write_status != 0) {
     goto cleanup;
   }
   copy_build_stats(&header, stats);

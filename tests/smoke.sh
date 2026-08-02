@@ -98,6 +98,22 @@ expect_collision "index command output" "$tmp/index-protected.bam" \
   "$tmp/index-protected.bam.backup" "$BNI" index -f -o "$tmp/index-protected.bam" \
   "$tmp/index-protected.bam"
 
+cp "$tmp/in.name.bam.bni" "$tmp/atomic-failure.bni"
+cp "$tmp/atomic-failure.bni" "$tmp/atomic-failure.bni.backup"
+if (trap '' XFSZ; ulimit -f 0; \
+  "$BNI" index -f -o "$tmp/atomic-failure.bni" "$tmp/in.name.bam") 2>/dev/null; then
+  echo "expected size-limited index write to fail" >&2
+  exit 1
+fi
+if ! cmp -s "$tmp/atomic-failure.bni" "$tmp/atomic-failure.bni.backup"; then
+  echo "failed atomic write modified the existing index" >&2
+  exit 1
+fi
+if find "$tmp" -maxdepth 1 -name 'atomic-failure.bni.tmp.*' -print -quit | grep -q .; then
+  echo "failed atomic write left a temporary index" >&2
+  exit 1
+fi
+
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then
   cc $(pkg-config --cflags htslib) -Iinclude tests/library_api.c libbni.a $(pkg-config --libs htslib) -o "$tmp/library_api"
   "$tmp/library_api" "$tmp/in.name.bam" read1 2
