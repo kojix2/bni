@@ -393,8 +393,8 @@ static int validate_index_entry(const bni_index_t *idx, uint64_t entry_i) {
   }
 
   const bni_entry_t *prev_e = &idx->entries[entry_i - 1];
-  if (prev_e->end_voff > e->beg_voff) {
-    bni_print_error("entries have overlapping virtual-offset ranges");
+  if (prev_e->end_voff != e->beg_voff) {
+    bni_print_error("entries have non-contiguous virtual-offset ranges");
     return -1;
   }
   return 0;
@@ -404,10 +404,21 @@ static int validate_index_entries(const bni_index_t *idx) {
   if (validate_string_table_bounds(idx) != 0) {
     return -1;
   }
+  uint64_t total_records = 0;
   for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
     if (validate_index_entry(idx, i) != 0) {
       return -1;
     }
+    if (total_records > UINT64_MAX - idx->entries[i].n_records) {
+      bni_print_error("index record count overflows");
+      return -1;
+    }
+    total_records += idx->entries[i].n_records;
+  }
+  if (total_records != idx->header.n_records) {
+    bni_print_error("index record count mismatch: header=%" PRIu64 " entries=%" PRIu64,
+                    idx->header.n_records, total_records);
+    return -1;
   }
   return 0;
 }

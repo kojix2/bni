@@ -23,6 +23,11 @@ samtools view -b -o "$tmp/in.bam" "$tmp/in.sam"
 samtools sort -N -o "$tmp/in.name.bam" "$tmp/in.bam"
 "$BNI" index -f "$tmp/in.name.bam"
 "$BNI" check --full "$tmp/in.name.bam"
+printf '@HD\tVN:1.6\tSO:queryname\tSS:queryname:lexicographical\n@SQ\tSN:chr1\tLN:1000\n' \
+  > "$tmp/empty.sam"
+samtools view -b -o "$tmp/empty.bam" "$tmp/empty.sam"
+"$BNI" index -f "$tmp/empty.bam"
+"$BNI" check --full "$tmp/empty.bam" >/dev/null
 "$BNI" get -O sam --no-header "$tmp/in.name.bam" read1 > "$tmp/read1.sam"
 count=$(cut -f1 "$tmp/read1.sam" | grep -c '^read1$')
 if [ "$count" -ne 2 ]; then
@@ -96,6 +101,44 @@ expect_collision "index command output" "$tmp/index-protected.bam" \
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then
   cc $(pkg-config --cflags htslib) -Iinclude tests/library_api.c libbni.a $(pkg-config --libs htslib) -o "$tmp/library_api"
   "$tmp/library_api" "$tmp/in.name.bam" read1 2
+
+  awk 'BEGIN {
+    print "@HD\tVN:1.6\tSO:queryname\tSS:queryname:lexicographical"
+    print "@SQ\tSN:chr1\tLN:1000"
+    for (i = 0; i < 3000; ++i) {
+      printf "bulk%05d\t4\t*\t0\t0\t*\t*\t0\t0\tACGTA\tIIIII\n", i
+    }
+  }' > "$tmp/bulk.sam"
+  samtools view -b -o "$tmp/bulk.bam" "$tmp/bulk.sam"
+  "$BNI" index -f "$tmp/bulk.bam"
+  "$BNI" check --full "$tmp/bulk.bam" >/dev/null
+
+  cc $(pkg-config --cflags htslib) -Iinclude tests/make_bad_indexes.c libbni.a \
+    $(pkg-config --libs htslib) -o "$tmp/make_bad_indexes"
+  "$tmp/make_bad_indexes" "$tmp/bulk.bam.bni" "$tmp/empty.bni" \
+    "$tmp/empty-count.bni" "$tmp/count.bni" "$tmp/truncated.bni" "$tmp/gap.bni"
+
+  expect_bad_full_check() {
+    local description=$1
+    local index_file=$2
+    local expected_error=$3
+    if "$BNI" check --full -i "$index_file" "$tmp/bulk.bam" \
+      > "$tmp/bad-check.out" 2> "$tmp/bad-check.err"; then
+      echo "expected $description full check to fail" >&2
+      exit 1
+    fi
+    if ! grep -q "$expected_error" "$tmp/bad-check.err"; then
+      echo "unexpected $description full-check error" >&2
+      exit 1
+    fi
+  }
+
+  expect_bad_full_check "empty index" "$tmp/empty.bni" 'not covered by the index'
+  expect_bad_full_check "empty index record count" "$tmp/empty-count.bni" \
+    'index record count mismatch'
+  expect_bad_full_check "header record count" "$tmp/count.bni" 'index record count mismatch'
+  expect_bad_full_check "truncated index" "$tmp/truncated.bni" 'not covered by the index'
+  expect_bad_full_check "entry gap" "$tmp/gap.bni" 'non-contiguous virtual-offset ranges'
 else
   echo "library API smoke test skipped: pkg-config htslib not found" >&2
 fi
