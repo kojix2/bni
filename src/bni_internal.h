@@ -4,6 +4,7 @@
 #include "bni.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 
 char *bni_default_index_path(const char *bam_path);
@@ -14,6 +15,8 @@ int bni_reject_output_collision(const char *output_path, const char *input_path,
                                 const char *input_description);
 int bni_write_index_file_exclusive(const char *path, const bni_file_header_t *header,
                                    const bni_entry_t *entries, const char *strings);
+int bni_write_spooled_index_file(const char *path, const bni_file_header_t *header,
+                                 FILE *entries_spool, FILE *strings_spool, int replace);
 int bni_path_exists(const char *path);
 int bni_has_suffix(const char *s, const char *suffix);
 int bni_parse_threads(const char *s, int *out);

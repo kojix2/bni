@@ -250,6 +250,59 @@ static int write_index_contents(FILE *fp, const char *path, const bni_file_heade
   return 0;
 }
 
+static int rewind_spool(FILE *spool, const char *description) {
+  if (fseeko(spool, 0, SEEK_SET) != 0) {
+    bni_print_error("failed rewinding temporary index %s: %s", description, strerror(errno));
+    return -1;
+  }
+  return 0;
+}
+
+static int write_spooled_index_contents(FILE *fp, const char *path,
+                                        const bni_file_header_t *header, FILE *entries_spool,
+                                        FILE *strings_spool) {
+  unsigned char hbuf[BNI_HEADER_SIZE];
+  encode_header(hbuf, header);
+  if (write_exact(fp, hbuf, sizeof(hbuf)) != 0) {
+    bni_print_error("failed writing BNI header to %s", path);
+    return -1;
+  }
+  if (rewind_spool(entries_spool, "entry table") != 0) {
+    return -1;
+  }
+  unsigned char ebuf[BNI_ENTRY_SIZE];
+  for (uint64_t i = 0; i < header->n_blocks; ++i) {
+    bni_entry_t entry;
+    if (fread(&entry, sizeof(entry), 1, entries_spool) != 1) {
+      bni_print_error("failed reading temporary index entry table");
+      return -1;
+    }
+    encode_entry(ebuf, &entry);
+    if (write_exact(fp, ebuf, sizeof(ebuf)) != 0) {
+      bni_print_error("failed writing BNI entries to %s", path);
+      return -1;
+    }
+  }
+  if (rewind_spool(strings_spool, "string table") != 0) {
+    return -1;
+  }
+  unsigned char buffer[64 * 1024];
+  uint64_t remaining = header->strings_size;
+  while (remaining > 0) {
+    size_t chunk = remaining < sizeof(buffer) ? (size_t)remaining : sizeof(buffer);
+    if (fread(buffer, 1, chunk, strings_spool) != chunk) {
+      bni_print_error("failed reading temporary index string table");
+      return -1;
+    }
+    if (write_exact(fp, buffer, chunk) != 0) {
+      bni_print_error("failed writing BNI string table to %s", path);
+      return -1;
+    }
+    remaining -= (uint64_t)chunk;
+  }
+  return 0;
+}
+
 static int create_index_temp(const char *path, char **temp_path_out) {
   static const char suffix_format[] = ".tmp.%ld.%u";
   size_t path_len = strlen(path);
@@ -313,6 +366,50 @@ static int write_index_file_atomic(const char *path, const bni_file_header_t *he
   }
 
   int status = write_index_contents(fp, path, header, entries, strings);
+  if (status == 0 && fflush(fp) != 0) {
+    bni_print_error("failed flushing temporary index for %s: %s", path, strerror(errno));
+    status = -1;
+  }
+  if (status == 0 && fsync(fileno(fp)) != 0) {
+    bni_print_error("failed syncing temporary index for %s: %s", path, strerror(errno));
+    status = -1;
+  }
+  if (fclose(fp) != 0) {
+    if (status == 0) {
+      bni_print_error("failed closing temporary index for %s: %s", path, strerror(errno));
+    }
+    status = -1;
+  }
+  if (status == 0 && publish_index_temp(temp_path, path, replace) != 0) {
+    bni_print_error("failed publishing index %s: %s", path, strerror(errno));
+    status = -1;
+  }
+  if (status != 0) {
+    (void)unlink(temp_path);
+  }
+  free(temp_path);
+  return status;
+}
+
+int bni_write_spooled_index_file(const char *path, const bni_file_header_t *header,
+                                 FILE *entries_spool, FILE *strings_spool, int replace) {
+  char *temp_path = NULL;
+  int fd = create_index_temp(path, &temp_path);
+  if (fd < 0) {
+    bni_print_error("could not create temporary index for %s: %s", path, strerror(errno));
+    return -1;
+  }
+  FILE *fp = fdopen(fd, "wb");
+  if (fp == NULL) {
+    int saved_errno = errno;
+    (void)close(fd);
+    (void)unlink(temp_path);
+    bni_print_error("could not open temporary index for %s: %s", path, strerror(saved_errno));
+    free(temp_path);
+    return -1;
+  }
+
+  int status = write_spooled_index_contents(fp, path, header, entries_spool, strings_spool);
   if (status == 0 && fflush(fp) != 0) {
     bni_print_error("failed flushing temporary index for %s: %s", path, strerror(errno));
     status = -1;

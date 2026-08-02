@@ -79,6 +79,8 @@ typedef struct {
   sam_hdr_t *hdr;
   BGZF *bgzf_fp;
   bam1_t *record;
+  char *previous_qname;
+  size_t previous_qname_capacity;
 } full_check_ctx_t;
 
 static int resolve_entry_names(const bni_index_t *idx, const bni_entry_t *entry,
@@ -145,20 +147,36 @@ static int validate_record_name(const bni_entry_t *entry, uint64_t entry_index,
   return 0;
 }
 
-static int remember_qname(char **previous, const char *qname, uint64_t entry_index) {
-  char *copy = bni_strdup(qname);
-  if (copy == NULL) {
+static int remember_qname(full_check_ctx_t *ctx, const char *qname, uint64_t entry_index) {
+  size_t size = strlen(qname) + 1;
+  if (size > ctx->previous_qname_capacity) {
+    size_t capacity = ctx->previous_qname_capacity ? ctx->previous_qname_capacity : 64;
+    while (capacity < size) {
+      if (capacity > SIZE_MAX / 2) {
+        capacity = size;
+        break;
+      }
+      capacity *= 2;
+    }
+    char *copy = (char *)realloc(ctx->previous_qname, capacity);
+    if (copy == NULL) {
+      bni_print_error("out of memory while checking entry %" PRIu64, entry_index);
+      return -1;
+    }
+    ctx->previous_qname = copy;
+    ctx->previous_qname_capacity = capacity;
+  }
+  if (ctx->previous_qname == NULL) {
     bni_print_error("out of memory while checking entry %" PRIu64, entry_index);
     return -1;
   }
-  free(*previous);
-  *previous = copy;
+  memcpy(ctx->previous_qname, qname, size);
   return 0;
 }
 
-static int check_entry_record(const full_check_ctx_t *ctx, const bni_entry_t *entry,
+static int check_entry_record(full_check_ctx_t *ctx, const bni_entry_t *entry,
                               uint64_t entry_index, uint32_t record_index, const char *first,
-                              const char *last, char **previous) {
+                              const char *last, const char *previous) {
   if (check_record_position(ctx, entry, entry_index, first, last) != 0) {
     return -1;
   }
@@ -173,10 +191,10 @@ static int check_entry_record(const full_check_ctx_t *ctx, const bni_entry_t *en
     bni_print_error("entry %" PRIu64 " contains record with NULL QNAME", entry_index);
     return -1;
   }
-  if (validate_record_name(entry, entry_index, record_index, first, last, *previous, qname) != 0) {
+  if (validate_record_name(entry, entry_index, record_index, first, last, previous, qname) != 0) {
     return -1;
   }
-  return remember_qname(previous, qname, entry_index);
+  return remember_qname(ctx, qname, entry_index);
 }
 
 static int check_entry_end(const full_check_ctx_t *ctx, const bni_entry_t *entry,
@@ -194,7 +212,7 @@ static int check_entry_end(const full_check_ctx_t *ctx, const bni_entry_t *entry
   return 0;
 }
 
-static int check_index_entry(const full_check_ctx_t *ctx, const bni_index_t *idx,
+static int check_index_entry(full_check_ctx_t *ctx, const bni_index_t *idx,
                              uint64_t entry_index) {
   const bni_entry_t *entry = &idx->entries[entry_index];
   const char *first = NULL;
@@ -206,14 +224,13 @@ static int check_index_entry(const full_check_ctx_t *ctx, const bni_index_t *idx
     return -1;
   }
 
-  char *previous = NULL;
+  const char *previous = NULL;
   for (uint32_t record_index = 0; record_index < entry->n_records; ++record_index) {
-    if (check_entry_record(ctx, entry, entry_index, record_index, first, last, &previous) != 0) {
-      free(previous);
+    if (check_entry_record(ctx, entry, entry_index, record_index, first, last, previous) != 0) {
       return -1;
     }
+    previous = ctx->previous_qname;
   }
-  free(previous);
   return check_entry_end(ctx, entry, entry_index);
 }
 
@@ -238,14 +255,17 @@ static int full_check(const bni_index_t *idx, samFile *in, sam_hdr_t *hdr, BGZF 
   }
   for (uint64_t entry_index = 0; entry_index < idx->header.n_blocks; ++entry_index) {
     if (check_index_entry(&ctx, idx, entry_index) != 0) {
+      free(ctx.previous_qname);
       bam_destroy1(ctx.record);
       return -1;
     }
   }
   if (check_full_eof(&ctx) != 0) {
+    free(ctx.previous_qname);
     bam_destroy1(ctx.record);
     return -1;
   }
+  free(ctx.previous_qname);
   bam_destroy1(ctx.record);
   return 0;
 }

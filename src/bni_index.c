@@ -14,23 +14,11 @@
 #include <htslib/tbx.h> /* hts_get_bgzfp() is declared here in htslib */
 
 typedef struct {
-  bni_entry_t *data;
-  size_t len;
-  size_t cap;
-} entry_vec_t;
-typedef struct {
-  char *data;
-  size_t len;
-  size_t cap;
-} strbuf_t;
-typedef struct {
   char *data;
   size_t cap;
 } namebuf_t;
 
 enum {
-  INITIAL_ENTRY_CAPACITY = 4096,
-  INITIAL_STRING_CAPACITY = 65536,
   BGZF_BLOCK_OFFSET_SHIFT = 16,
   FORMAT_BUFFER_SIZE = 64,
   OPT_NO_HEADER_CHECK = 1000,
@@ -51,79 +39,31 @@ static void usage_index(FILE *fp) {
                 "  -h, --help                 show this help\n");
 }
 
-static void entry_vec_free(entry_vec_t *v) {
-  free(v->data);
-  v->data = NULL;
-  v->len = v->cap = 0;
-}
-static void strbuf_free(strbuf_t *s) {
-  free(s->data);
-  s->data = NULL;
-  s->len = s->cap = 0;
-}
 static void namebuf_free(namebuf_t *s) {
   free(s->data);
   s->data = NULL;
   s->cap = 0;
 }
 
-static int entry_vec_push(entry_vec_t *v, bni_entry_t e) {
-  if (v->len == v->cap) {
-    size_t new_cap = v->cap ? v->cap * 2 : INITIAL_ENTRY_CAPACITY;
-    if (new_cap < v->cap || new_cap > SIZE_MAX / sizeof(bni_entry_t)) {
-      bni_print_error("too many BGZF block entries for this platform");
-      return -1;
-    }
-    bni_entry_t *p = (bni_entry_t *)realloc(v->data, new_cap * sizeof(bni_entry_t));
-    if (p == NULL) {
-      bni_print_error("out of memory while growing entry table");
-      return -1;
-    }
-    v->data = p;
-    v->cap = new_cap;
-  }
-  v->data[v->len++] = e;
-  return 0;
-}
-
-static int strbuf_append_cstr(strbuf_t *s, const char *name, uint64_t *offset_out) {
+static int spool_cstr(FILE *spool, uint64_t *strings_size, const char *name,
+                      uint64_t *offset_out) {
   size_t n = strlen(name) + 1;
-  if (s->len > UINT64_MAX) {
-    return -1;
-  }
-  if (offset_out) {
-    *offset_out = (uint64_t)s->len;
-  }
-  if (n > SIZE_MAX - s->len) {
+  if ((uint64_t)n > UINT64_MAX - *strings_size) {
     bni_print_error("string table is too large");
     return -1;
   }
-  size_t need = s->len + n;
-  if (need > s->cap) {
-    size_t new_cap = s->cap ? s->cap * 2 : INITIAL_STRING_CAPACITY;
-    while (new_cap < need) {
-      if (new_cap > SIZE_MAX / 2) {
-        new_cap = need;
-        break;
-      }
-      new_cap *= 2;
-    }
-    char *p = (char *)realloc(s->data, new_cap);
-    if (p == NULL) {
-      bni_print_error("out of memory while growing string table");
-      return -1;
-    }
-    s->data = p;
-    s->cap = new_cap;
+  *offset_out = *strings_size;
+  if (fwrite(name, 1, n, spool) != n) {
+    bni_print_error("failed writing temporary index string table: %s", strerror(errno));
+    return -1;
   }
-  memcpy(s->data + s->len, name, n);
-  s->len += n;
+  *strings_size += (uint64_t)n;
   return 0;
 }
 
-static int add_bgzf_block(entry_vec_t *entries, strbuf_t *strings, const char *first_name,
-                          const char *last_name, uint64_t beg_voff, uint64_t end_voff,
-                          uint32_t n_records) {
+static int add_bgzf_block(FILE *entries_spool, FILE *strings_spool, uint64_t *n_blocks,
+                          uint64_t *strings_size, const char *first_name, const char *last_name,
+                          uint64_t beg_voff, uint64_t end_voff, uint32_t n_records) {
   uint64_t first_offset = 0;
   uint64_t last_offset = 0;
   if (first_name == NULL || last_name == NULL || n_records == 0) {
@@ -139,10 +79,14 @@ static int add_bgzf_block(entry_vec_t *entries, strbuf_t *strings, const char *f
     bni_print_error("internal error while adding empty virtual-offset range");
     return -1;
   }
-  if (strbuf_append_cstr(strings, first_name, &first_offset) != 0) {
+  if (*n_blocks == UINT64_MAX) {
+    bni_print_error("too many BGZF block entries");
     return -1;
   }
-  if (strbuf_append_cstr(strings, last_name, &last_offset) != 0) {
+  if (spool_cstr(strings_spool, strings_size, first_name, &first_offset) != 0) {
+    return -1;
+  }
+  if (spool_cstr(strings_spool, strings_size, last_name, &last_offset) != 0) {
     return -1;
   }
   bni_entry_t e;
@@ -152,7 +96,12 @@ static int add_bgzf_block(entry_vec_t *entries, strbuf_t *strings, const char *f
   e.beg_voff = beg_voff;
   e.end_voff = end_voff;
   e.n_records = n_records;
-  return entry_vec_push(entries, e);
+  if (fwrite(&e, sizeof(e), 1, entries_spool) != 1) {
+    bni_print_error("failed writing temporary index entry table: %s", strerror(errno));
+    return -1;
+  }
+  (*n_blocks)++;
+  return 0;
 }
 
 static int header_is_queryname_lex(sam_hdr_t *hdr, int no_header_check) {
@@ -214,8 +163,10 @@ typedef struct {
 } build_input_t;
 
 typedef struct {
-  entry_vec_t entries;
-  strbuf_t strings;
+  FILE *entries_spool;
+  FILE *strings_spool;
+  uint64_t n_blocks;
+  uint64_t strings_size;
   namebuf_t previous_name;
   namebuf_t block_first;
   uint64_t block_compressed_offset;
@@ -306,8 +257,28 @@ static void close_build_input(build_input_t *input) {
 static void index_scan_destroy(index_scan_t *scan) {
   namebuf_free(&scan->previous_name);
   namebuf_free(&scan->block_first);
-  entry_vec_free(&scan->entries);
-  strbuf_free(&scan->strings);
+  if (scan->entries_spool != NULL) {
+    (void)fclose(scan->entries_spool);
+  }
+  if (scan->strings_spool != NULL) {
+    (void)fclose(scan->strings_spool);
+  }
+  scan->entries_spool = NULL;
+  scan->strings_spool = NULL;
+}
+
+static int index_scan_init(index_scan_t *scan) {
+  scan->entries_spool = tmpfile();
+  if (scan->entries_spool == NULL) {
+    bni_print_error("could not create temporary index entry table: %s", strerror(errno));
+    return -1;
+  }
+  scan->strings_spool = tmpfile();
+  if (scan->strings_spool == NULL) {
+    bni_print_error("could not create temporary index string table: %s", strerror(errno));
+    return -1;
+  }
+  return 0;
 }
 
 static int check_qname_order(const index_scan_t *scan, const char *qname) {
@@ -338,14 +309,11 @@ static int update_scan_block(index_scan_t *scan, uint64_t record_beg_voff, const
     return start_scan_block(scan, record_beg_voff, record_compressed_offset, qname);
   }
   if (record_compressed_offset != scan->block_compressed_offset) {
-    if (add_bgzf_block(&scan->entries, &scan->strings, scan->block_first.data,
-                       scan->previous_name.data, scan->block_beg_voff, record_beg_voff,
-                       scan->block_records) != 0) {
+    if (add_bgzf_block(scan->entries_spool, scan->strings_spool, &scan->n_blocks,
+                       &scan->strings_size, scan->block_first.data, scan->previous_name.data,
+                       scan->block_beg_voff, record_beg_voff, scan->block_records) != 0) {
       return -1;
     }
-    free(scan->previous_name.data); // NOLINT(clang-analyzer-unix.Malloc)
-    scan->previous_name.data = NULL;
-    scan->previous_name.cap = 0;
     return start_scan_block(scan, record_beg_voff, record_compressed_offset, qname);
   }
   if (scan->block_records == UINT32_MAX) {
@@ -425,9 +393,10 @@ static int scan_bam_records(const build_input_t *input, index_scan_t *scan) {
     }
     next_record_beg_voff = record_end_voff;
   }
-  if (scan->have_block && add_bgzf_block(&scan->entries, &scan->strings, scan->block_first.data,
-                                         scan->previous_name.data, scan->block_beg_voff,
-                                         scan->last_record_end_voff, scan->block_records) != 0) {
+  if (scan->have_block &&
+      add_bgzf_block(scan->entries_spool, scan->strings_spool, &scan->n_blocks,
+                     &scan->strings_size, scan->block_first.data, scan->previous_name.data,
+                     scan->block_beg_voff, scan->last_record_end_voff, scan->block_records) != 0) {
     goto done;
   }
   status = 0;
@@ -447,12 +416,12 @@ static void init_index_header(bni_file_header_t *header, const index_scan_t *sca
   header->version = BNI_FORMAT_VERSION;
   header->header_size = BNI_HEADER_SIZE;
   header->flags = BNI_FLAG_BGZF_BLOCKS | BNI_FLAG_MTIME_NSEC;
-  header->n_blocks = (uint64_t)scan->entries.len;
+  header->n_blocks = scan->n_blocks;
   header->n_records = scan->total_records;
   header->entries_offset = BNI_HEADER_SIZE;
   header->strings_offset =
-      BNI_HEADER_SIZE + ((uint64_t)scan->entries.len * (uint64_t)BNI_ENTRY_SIZE);
-  header->strings_size = (uint64_t)scan->strings.len;
+      BNI_HEADER_SIZE + (scan->n_blocks * (uint64_t)BNI_ENTRY_SIZE);
+  header->strings_size = scan->strings_size;
   header->bam_size = bam_size;
   header->bam_mtime = bam_mtime;
   header->bam_mtime_nsec = bam_mtime_nsec;
@@ -504,6 +473,9 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   if (open_build_input(bam_path, threads, no_header_check, &input) != 0) {
     goto cleanup;
   }
+  if (index_scan_init(&scan) != 0) {
+    goto cleanup;
+  }
   if (scan_bam_records(&input, &scan) != 0) {
     goto cleanup;
   }
@@ -522,10 +494,8 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
 
   bni_file_header_t header;
   init_index_header(&header, &scan, &input, bam_size, bam_mtime, bam_mtime_nsec);
-  const char *string_table = scan.strings.data ? scan.strings.data : "";
-  int write_status = force ? bni_write_index_file(out_path, &header, scan.entries.data, string_table)
-                           : bni_write_index_file_exclusive(out_path, &header, scan.entries.data,
-                                                           string_table);
+  int write_status = bni_write_spooled_index_file(out_path, &header, scan.entries_spool,
+                                                  scan.strings_spool, force);
   if (write_status != 0) {
     goto cleanup;
   }
