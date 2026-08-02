@@ -15,10 +15,10 @@ static int write_index(const char *path, const bni_file_header_t *header,
 }
 
 int main(int argc, char **argv) {
-  if (argc != 11) {
+  if (argc != 13) {
     fprintf(stderr,
             "usage: %s IN EMPTY EMPTY_COUNT COUNT TRUNCATED GAP ENTRY_ORDER RANGE_ORDER "
-            "INSIDE_OFFSET UNTERMINATED\n",
+            "INSIDE_OFFSET UNTERMINATED UNKNOWN_SORT UNKNOWN_FLAGS\n",
             argv[0]);
     return 2;
   }
@@ -102,10 +102,23 @@ int main(int argc, char **argv) {
   }
   memcpy(strings, idx.strings, (size_t)idx.header.strings_size);
   strings[idx.header.strings_size - 1] = 'X';
-  if (write_index(argv[10], &idx.header, idx.entries, strings) == 0) {
-    status = 0;
+  if (write_index(argv[10], &idx.header, idx.entries, strings) != 0) {
+    free(strings);
+    goto entries_done;
   }
   free(strings);
+
+  header = idx.header;
+  header.sort_order = UINT32_MAX;
+  if (write_index(argv[11], &header, idx.entries, idx.strings) != 0) {
+    goto entries_done;
+  }
+
+  header = idx.header;
+  header.flags |= UINT32_C(0x80000000);
+  if (write_index(argv[12], &header, idx.entries, idx.strings) == 0) {
+    status = 0;
+  }
 
 entries_done:
   free(entries);

@@ -37,7 +37,7 @@ reserved               zero-filled to 128 bytes
 
 `BNI_FLAG_MTIME_NSEC` indicates that `bam_mtime_nsec` is present. Metadata validation requires
 this flag; older indexes without nanosecond mtime metadata must be rebuilt unless metadata checks
-are explicitly disabled.
+are explicitly disabled. Readers reject unknown flag bits and sort-order values within BNIv2.
 
 Each entry is 40 bytes, little-endian:
 

@@ -165,7 +165,7 @@ if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then
   "$tmp/make_bad_indexes" "$tmp/bulk.bam.bni" "$tmp/empty.bni" \
     "$tmp/empty-count.bni" "$tmp/count.bni" "$tmp/truncated.bni" "$tmp/gap.bni" \
     "$tmp/entry-order.bni" "$tmp/range-order.bni" "$tmp/inside-offset.bni" \
-    "$tmp/unterminated.bni"
+    "$tmp/unterminated.bni" "$tmp/unknown-sort.bni" "$tmp/unknown-flags.bni"
 
   expect_bad_full_check() {
     local description=$1
@@ -195,6 +195,9 @@ if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then
     'is not at a string boundary'
   expect_bad_full_check "unterminated string" "$tmp/unterminated.bni" \
     'string table is not NUL-terminated'
+  expect_bad_full_check "unknown sort order" "$tmp/unknown-sort.bni" \
+    'unsupported BNI sort order'
+  expect_bad_full_check "unknown flags" "$tmp/unknown-flags.bni" 'unknown BNI flag bits'
 else
   echo "library API smoke test skipped: pkg-config htslib not found" >&2
 fi

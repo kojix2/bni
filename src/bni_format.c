@@ -146,6 +146,7 @@ static void decode_entry(const unsigned char in[BNI_ENTRY_SIZE], bni_entry_t *e)
 }
 
 static int validate_header(const bni_file_header_t *h) {
+  const uint32_t known_flags = BNI_FLAG_BGZF_BLOCKS | BNI_FLAG_MTIME_NSEC;
   if (h->version != BNI_FORMAT_VERSION) {
     bni_print_error("unsupported BNI version %u", h->version);
     return -1;
@@ -160,6 +161,14 @@ static int validate_header(const bni_file_header_t *h) {
   }
   if ((h->flags & BNI_FLAG_BGZF_BLOCKS) == 0) {
     bni_print_error("unsupported BNI mode flags 0x%08x", h->flags);
+    return -1;
+  }
+  if ((h->flags & ~known_flags) != 0) {
+    bni_print_error("unknown BNI flag bits 0x%08x", h->flags & ~known_flags);
+    return -1;
+  }
+  if (h->sort_order != BNI_SORT_QUERYNAME_LEX) {
+    bni_print_error("unsupported BNI sort order %u", h->sort_order);
     return -1;
   }
   if ((h->flags & BNI_FLAG_MTIME_NSEC) != 0 && h->bam_mtime_nsec >= 1000000000u) {
