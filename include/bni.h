@@ -23,7 +23,7 @@
 #define BNI_MAGIC2 'I'
 #define BNI_MAGIC3 1
 
-#define BNI_FORMAT_VERSION 2u
+#define BNI_FORMAT_VERSION 1u
 #define BNI_HEADER_SIZE 128u
 #define BNI_ENTRY_SIZE 40u
 

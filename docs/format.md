@@ -1,9 +1,9 @@
-# BNIv2 File Format
+# BNIv1 File Format
 
 `.bni` is an uncompressed binary sidecar file for BAM files sorted with
 `samtools sort -N`. BAM remains BGZF-compressed; BNI itself is not compressed.
 
-BNIv2 is a **BGZF-block name-range index**. It does not store one entry per
+BNIv1 is a **BGZF-block name-range index**. It does not store one entry per
 read name. Instead, it stores one entry for each BGZF block that contains the
 start of at least one BAM record.
 
@@ -18,7 +18,7 @@ Header fields are little-endian:
 
 ```text
 magic                  4 bytes  "BNI\1"
-version                u32      2
+version                u32      1
 header_size            u32      128
 flags                  u32      BNI_FLAG_BGZF_BLOCKS | BNI_FLAG_MTIME_NSEC
 n_blocks               u64      number of BGZF-block entries
@@ -37,7 +37,7 @@ reserved               zero-filled to 128 bytes
 
 `BNI_FLAG_MTIME_NSEC` indicates that `bam_mtime_nsec` is present. Metadata validation requires
 this flag; older indexes without nanosecond mtime metadata must be rebuilt unless metadata checks
-are explicitly disabled. Readers reject unknown flag bits and sort-order values within BNIv2.
+are explicitly disabled. Readers reject unknown flag bits and sort-order values within BNIv1.
 
 Each entry is 40 bytes, little-endian:
 
@@ -88,5 +88,5 @@ while sam_read1():
 ```
 
 This is intentionally different from record-offset indexes for arbitrary BAM
-order. BNIv2 uses the queryname sort order and BGZF block structure to keep the
+order. BNIv1 uses the queryname sort order and BGZF block structure to keep the
 index small while still avoiding a full BAM scan.

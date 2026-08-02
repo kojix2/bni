@@ -9,7 +9,7 @@
 ## Status
 
 - Prototype C implementation
-- File format: [BNIv2](docs/format.md)
+- File format: [BNIv1](docs/format.md)
 - Input: BGZF-compressed BAM
 - Required sort order: `queryname:lexicographical`
 
@@ -71,7 +71,7 @@ reads.name.bam.bni
 
 ## Format Summary
 
-BNIv2 stores one entry per BGZF block that contains BAM record starts.
+BNIv1 stores one entry per BGZF block that contains BAM record starts.
 
 Each entry stores:
 
@@ -90,14 +90,14 @@ Lookup uses the first entry whose `last_qname >= target_qname`, seeks to
 
 - [CLI usage](docs/cli.md)
 - [Library API](docs/library-api.md)
-- [BNIv2 file format](docs/format.md)
+- [BNIv1 file format](docs/format.md)
 
 ## Limitations
 
 - Input is BAM only.
 - Input must be BGZF-compressed and seekable.
 - Input must be sorted with `samtools sort -N`.
-- CRAM input is not supported in BNIv2.
+- CRAM input is not supported in BNIv1.
 - Index entries are loaded into memory; the string table is mmap-backed when available.
 
 ## Acknowledgements

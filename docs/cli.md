@@ -20,7 +20,7 @@ This writes:
 reads.name.bam.bni
 ```
 
-BNIv2 stores one entry per BGZF block that contains BAM record starts. Each
+BNIv1 stores one entry per BGZF block that contains BAM record starts. Each
 entry remembers the first and last QNAME in that block-like range.
 
 ## Extract Records

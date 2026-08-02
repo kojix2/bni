@@ -355,7 +355,7 @@ static int read_index_header(FILE *fp, const char *path, bni_file_header_t *head
     return -1;
   }
   if (decode_header(hbuf, header) != 0 || validate_header(header) != 0) {
-    bni_print_error("%s is not a valid BNI v2 BGZF-block index", path);
+    bni_print_error("%s is not a valid BNI v1 BGZF-block index", path);
     return -1;
   }
   uint64_t entry_bytes_u64 = header->n_blocks * (uint64_t)BNI_ENTRY_SIZE;

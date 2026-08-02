@@ -41,7 +41,7 @@ static void usage_index(FILE *fp) {
                 "Usage:\n"
                 "  bni index [options] <in.name.bam>\n\n"
                 "Create <in.name.bam>.bni for a BAM sorted with samtools sort -N.\n"
-                "BNIv2 stores one index entry per BGZF block that contains BAM record starts.\n\n"
+                "BNIv1 stores one index entry per BGZF block that contains BAM record starts.\n\n"
                 "Options:\n"
                 "  -o, --output FILE          output index file [default: <in.bam>.bni]\n"
                 "  -f, --force                overwrite an existing index\n"
