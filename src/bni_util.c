@@ -71,6 +71,34 @@ int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out) 
   return 0;
 }
 
+int bni_reject_output_collision(const char *output_path, const char *input_path,
+                                const char *input_description) {
+  if (output_path == NULL || input_path == NULL || strcmp(output_path, "-") == 0 ||
+      strcmp(input_path, "-") == 0) {
+    return 0;
+  }
+
+  struct stat output_stat;
+  if (stat(output_path, &output_stat) != 0) {
+    if (errno == ENOENT) {
+      return 0;
+    }
+    bni_print_error("could not stat output %s: %s", output_path, strerror(errno));
+    return -1;
+  }
+
+  struct stat input_stat;
+  if (stat(input_path, &input_stat) != 0) {
+    bni_print_error("could not stat %s %s: %s", input_description, input_path, strerror(errno));
+    return -1;
+  }
+  if (output_stat.st_dev == input_stat.st_dev && output_stat.st_ino == input_stat.st_ino) {
+    bni_print_error("output %s would overwrite %s %s", output_path, input_description, input_path);
+    return -1;
+  }
+  return 0;
+}
+
 int bni_path_exists(const char *path) { return path != NULL && access(path, F_OK) == 0; }
 
 int bni_has_suffix(const char *s, const char *suffix) {

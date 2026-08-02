@@ -44,6 +44,55 @@ if ! grep -qx 'read11' "$tmp/missing.err"; then
 fi
 "$BNI" stats "$tmp/in.name.bam" >/dev/null
 
+expect_collision() {
+  local description=$1
+  local protected_file=$2
+  local backup_file=$3
+  shift 3
+  if "$@" 2> "$tmp/collision.err"; then
+    echo "expected $description collision to fail" >&2
+    exit 1
+  fi
+  if ! grep -q 'would overwrite' "$tmp/collision.err"; then
+    echo "expected $description collision error" >&2
+    exit 1
+  fi
+  if ! cmp -s "$protected_file" "$backup_file"; then
+    echo "$description collision modified the protected file" >&2
+    exit 1
+  fi
+}
+
+cp "$tmp/in.name.bam" "$tmp/protected.bam"
+cp "$tmp/protected.bam" "$tmp/protected.bam.backup"
+cp "$tmp/in.name.bam.bni" "$tmp/protected.bam.bni"
+expect_collision "BAM output" "$tmp/protected.bam" "$tmp/protected.bam.backup" \
+  "$BNI" get -O sam --no-header -o "$tmp/protected.bam" "$tmp/protected.bam" read1
+
+cp "$tmp/protected.bam.bni" "$tmp/protected.bam.bni.backup"
+expect_collision "index output" "$tmp/protected.bam.bni" "$tmp/protected.bam.bni.backup" \
+  "$BNI" get -O sam --no-header -o "$tmp/protected.bam.bni" "$tmp/protected.bam" read1
+
+printf 'read1\n' > "$tmp/protected.names"
+cp "$tmp/protected.names" "$tmp/protected.names.backup"
+expect_collision "name-file output" "$tmp/protected.names" "$tmp/protected.names.backup" \
+  "$BNI" get -O sam --no-header -f "$tmp/protected.names" -o "$tmp/protected.names" \
+  "$tmp/protected.bam"
+
+ln "$tmp/protected.bam" "$tmp/protected.hardlink.bam"
+expect_collision "hard-link output" "$tmp/protected.bam" "$tmp/protected.bam.backup" \
+  "$BNI" get -O sam --no-header -o "$tmp/protected.hardlink.bam" "$tmp/protected.bam" read1
+
+ln -s "$tmp/protected.bam" "$tmp/protected.symlink.bam"
+expect_collision "symbolic-link output" "$tmp/protected.bam" "$tmp/protected.bam.backup" \
+  "$BNI" get -O sam --no-header -o "$tmp/protected.symlink.bam" "$tmp/protected.bam" read1
+
+cp "$tmp/in.name.bam" "$tmp/index-protected.bam"
+cp "$tmp/index-protected.bam" "$tmp/index-protected.bam.backup"
+expect_collision "index command output" "$tmp/index-protected.bam" \
+  "$tmp/index-protected.bam.backup" "$BNI" index -f -o "$tmp/index-protected.bam" \
+  "$tmp/index-protected.bam"
+
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then
   cc $(pkg-config --cflags htslib) -Iinclude tests/library_api.c libbni.a $(pkg-config --libs htslib) -o "$tmp/library_api"
   "$tmp/library_api" "$tmp/in.name.bam" read1 2

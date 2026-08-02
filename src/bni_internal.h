@@ -9,6 +9,8 @@
 char *bni_default_index_path(const char *bam_path);
 uint64_t bni_fnv1a64(const void *data, size_t len);
 int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out);
+int bni_reject_output_collision(const char *output_path, const char *input_path,
+                                const char *input_description);
 int bni_path_exists(const char *path);
 int bni_has_suffix(const char *s, const char *suffix);
 int bni_parse_threads(const char *s, int *out);

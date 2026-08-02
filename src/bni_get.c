@@ -806,12 +806,38 @@ static int report_get_missing(uint64_t missing, int missing_ok) {
   return 1;
 }
 
+static int check_get_output_collisions(const get_options_t *options,
+                                       const get_operands_t *operands,
+                                       const char *resolved_index_path) {
+  if (bni_reject_output_collision(options->out_path, operands->bam_path, "input BAM") != 0 ||
+      bni_reject_output_collision(options->out_path, resolved_index_path, "BNI index") != 0) {
+    return -1;
+  }
+  if (options->names_path != NULL &&
+      bni_reject_output_collision(options->out_path, options->names_path, "name file") != 0) {
+    return -1;
+  }
+  return 0;
+}
+
 static int run_get_command(const get_options_t *options, const get_operands_t *operands,
                            out_format_t out_format) {
   bni_reader_options_t reader_opts;
   memset(&reader_opts, 0, sizeof(reader_opts));
   reader_opts.threads = options->threads;
   reader_opts.ignore_metadata = options->ignore_metadata;
+
+  char *default_index = NULL;
+  const char *resolved_index_path = NULL;
+  if (resolve_reader_index_path(operands->bam_path, options->index_path_arg, &default_index,
+                                &resolved_index_path) != 0) {
+    return 1;
+  }
+  if (check_get_output_collisions(options, operands, resolved_index_path) != 0) {
+    free(default_index);
+    return 1;
+  }
+  free(default_index);
 
   bni_reader_t *reader = NULL;
   if (bni_reader_open(operands->bam_path, options->index_path_arg, &reader_opts, &reader) != 0) {

@@ -491,6 +491,9 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   if (resolve_build_output_path(bam_path, index_path, force, &default_out, &out_path) != 0) {
     goto cleanup;
   }
+  if (bni_reject_output_collision(out_path, bam_path, "input BAM") != 0) {
+    goto cleanup;
+  }
   if (read_bam_metadata(bam_path, &bam_size, &bam_mtime) != 0) {
     goto cleanup;
   }
