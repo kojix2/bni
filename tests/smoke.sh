@@ -116,7 +116,9 @@ if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then
   cc $(pkg-config --cflags htslib) -Iinclude tests/make_bad_indexes.c libbni.a \
     $(pkg-config --libs htslib) -o "$tmp/make_bad_indexes"
   "$tmp/make_bad_indexes" "$tmp/bulk.bam.bni" "$tmp/empty.bni" \
-    "$tmp/empty-count.bni" "$tmp/count.bni" "$tmp/truncated.bni" "$tmp/gap.bni"
+    "$tmp/empty-count.bni" "$tmp/count.bni" "$tmp/truncated.bni" "$tmp/gap.bni" \
+    "$tmp/entry-order.bni" "$tmp/range-order.bni" "$tmp/inside-offset.bni" \
+    "$tmp/unterminated.bni"
 
   expect_bad_full_check() {
     local description=$1
@@ -139,6 +141,13 @@ if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists htslib; then
   expect_bad_full_check "header record count" "$tmp/count.bni" 'index record count mismatch'
   expect_bad_full_check "truncated index" "$tmp/truncated.bni" 'not covered by the index'
   expect_bad_full_check "entry gap" "$tmp/gap.bni" 'non-contiguous virtual-offset ranges'
+  expect_bad_full_check "entry QNAME order" "$tmp/entry-order.bni" 'decreasing QNAME range'
+  expect_bad_full_check "QNAME range order" "$tmp/range-order.bni" \
+    'QNAME ranges decrease between entries'
+  expect_bad_full_check "inside-string offset" "$tmp/inside-offset.bni" \
+    'is not at a string boundary'
+  expect_bad_full_check "unterminated string" "$tmp/unterminated.bni" \
+    'string table is not NUL-terminated'
 else
   echo "library API smoke test skipped: pkg-config htslib not found" >&2
 fi

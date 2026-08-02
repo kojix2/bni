@@ -370,14 +370,37 @@ static int load_index_strings(FILE *fp, const char *path, bni_index_t *idx) {
   return read_index_strings(fp, path, idx);
 }
 
-static int validate_index_entry(const bni_index_t *idx, uint64_t entry_i) {
-  const bni_entry_t *e = &idx->entries[entry_i];
-  if (e->first_name_offset >= idx->header.strings_size) {
-    bni_print_error("invalid first name offset in entry %" PRIu64, entry_i);
+static int validate_name_offset(const bni_index_t *idx, uint64_t offset, const char *kind,
+                                uint64_t entry_i, const char **name_out) {
+  if (offset >= idx->header.strings_size) {
+    bni_print_error("invalid %s name offset in entry %" PRIu64, kind, entry_i);
     return -1;
   }
-  if (e->last_name_offset >= idx->header.strings_size) {
-    bni_print_error("invalid last name offset in entry %" PRIu64, entry_i);
+  if (offset > 0 && idx->strings[offset - 1] != '\0') {
+    bni_print_error("%s name offset in entry %" PRIu64 " is not at a string boundary", kind,
+                    entry_i);
+    return -1;
+  }
+  const char *name = idx->strings + offset;
+  size_t remaining = (size_t)(idx->header.strings_size - offset);
+  if (memchr(name, '\0', remaining) == NULL) {
+    bni_print_error("%s name in entry %" PRIu64 " is not NUL-terminated", kind, entry_i);
+    return -1;
+  }
+  *name_out = name;
+  return 0;
+}
+
+static int validate_index_entry(const bni_index_t *idx, uint64_t entry_i, const char **first_out,
+                                const char **last_out) {
+  const bni_entry_t *e = &idx->entries[entry_i];
+  if (validate_name_offset(idx, e->first_name_offset, "first", entry_i, first_out) != 0 ||
+      validate_name_offset(idx, e->last_name_offset, "last", entry_i, last_out) != 0) {
+    return -1;
+  }
+  if (strcmp(*first_out, *last_out) > 0) {
+    bni_print_error("entry %" PRIu64 " has decreasing QNAME range '%s'..'%s'", entry_i,
+                    *first_out, *last_out);
     return -1;
   }
   if (e->beg_voff >= e->end_voff) {
@@ -405,10 +428,20 @@ static int validate_index_entries(const bni_index_t *idx) {
     return -1;
   }
   uint64_t total_records = 0;
+  const char *previous_last = NULL;
   for (uint64_t i = 0; i < idx->header.n_blocks; ++i) {
-    if (validate_index_entry(idx, i) != 0) {
+    const char *first = NULL;
+    const char *last = NULL;
+    if (validate_index_entry(idx, i, &first, &last) != 0) {
       return -1;
     }
+    if (previous_last != NULL && strcmp(previous_last, first) > 0) {
+      bni_print_error("QNAME ranges decrease between entries %" PRIu64 " and %" PRIu64
+                      " near '%s' -> '%s'",
+                      i - 1, i, previous_last, first);
+      return -1;
+    }
+    previous_last = last;
     if (total_records > UINT64_MAX - idx->entries[i].n_records) {
       bni_print_error("index record count overflows");
       return -1;
