@@ -245,8 +245,9 @@ static int resolve_build_output_path(const char *bam_path, const char *index_pat
   return 0;
 }
 
-static int read_bam_metadata(const char *bam_path, uint64_t *bam_size, int64_t *bam_mtime) {
-  if (bni_file_metadata(bam_path, bam_size, bam_mtime) != 0) {
+static int read_bam_metadata(const char *bam_path, uint64_t *bam_size, int64_t *bam_mtime,
+                             uint32_t *bam_mtime_nsec) {
+  if (bni_file_metadata(bam_path, bam_size, bam_mtime, bam_mtime_nsec) != 0) {
     bni_print_error("could not stat %s: %s", bam_path, strerror(errno));
     return -1;
   }
@@ -440,11 +441,12 @@ done:
 }
 
 static void init_index_header(bni_file_header_t *header, const index_scan_t *scan,
-                              const build_input_t *input, uint64_t bam_size, int64_t bam_mtime) {
+                              const build_input_t *input, uint64_t bam_size, int64_t bam_mtime,
+                              uint32_t bam_mtime_nsec) {
   memset(header, 0, sizeof(*header));
   header->version = BNI_FORMAT_VERSION;
   header->header_size = BNI_HEADER_SIZE;
-  header->flags = BNI_FLAG_BGZF_BLOCKS;
+  header->flags = BNI_FLAG_BGZF_BLOCKS | BNI_FLAG_MTIME_NSEC;
   header->n_blocks = (uint64_t)scan->entries.len;
   header->n_records = scan->total_records;
   header->entries_offset = BNI_HEADER_SIZE;
@@ -453,6 +455,7 @@ static void init_index_header(bni_file_header_t *header, const index_scan_t *sca
   header->strings_size = (uint64_t)scan->strings.len;
   header->bam_size = bam_size;
   header->bam_mtime = bam_mtime;
+  header->bam_mtime_nsec = bam_mtime_nsec;
   header->header_hash = header_hash64(input->header);
   header->sort_order = BNI_SORT_QUERYNAME_LEX;
   header->entry_size = BNI_ENTRY_SIZE;
@@ -484,6 +487,7 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   const char *out_path = NULL;
   uint64_t bam_size = 0;
   int64_t bam_mtime = 0;
+  uint32_t bam_mtime_nsec = 0;
   build_input_t input = {0};
   index_scan_t scan = {0};
   int status = -1;
@@ -494,7 +498,7 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
   if (bni_reject_output_collision(out_path, bam_path, "input BAM") != 0) {
     goto cleanup;
   }
-  if (read_bam_metadata(bam_path, &bam_size, &bam_mtime) != 0) {
+  if (read_bam_metadata(bam_path, &bam_size, &bam_mtime, &bam_mtime_nsec) != 0) {
     goto cleanup;
   }
   if (open_build_input(bam_path, threads, no_header_check, &input) != 0) {
@@ -504,8 +508,20 @@ int bni_build_index(const char *bam_path, const char *index_path, const bni_buil
     goto cleanup;
   }
 
+  uint64_t final_bam_size = 0;
+  int64_t final_bam_mtime = 0;
+  uint32_t final_bam_mtime_nsec = 0;
+  if (read_bam_metadata(bam_path, &final_bam_size, &final_bam_mtime, &final_bam_mtime_nsec) != 0) {
+    goto cleanup;
+  }
+  if (final_bam_size != bam_size || final_bam_mtime != bam_mtime ||
+      final_bam_mtime_nsec != bam_mtime_nsec) {
+    bni_print_error("BAM changed while the index was being built; index was not written");
+    goto cleanup;
+  }
+
   bni_file_header_t header;
-  init_index_header(&header, &scan, &input, bam_size, bam_mtime);
+  init_index_header(&header, &scan, &input, bam_size, bam_mtime, bam_mtime_nsec);
   const char *string_table = scan.strings.data ? scan.strings.data : "";
   int write_status = force ? bni_write_index_file(out_path, &header, scan.entries.data, string_table)
                            : bni_write_index_file_exclusive(out_path, &header, scan.entries.data,

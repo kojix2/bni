@@ -135,4 +135,6 @@ bni_reader_t *reader = NULL;
 int rc = bni_reader_open("reads.name.bam", "custom.bni", &opts, &reader);
 ```
 
-By default, `bni_reader_open()` checks BAM size, mtime, and SAM header hash against the index metadata.
+By default, `bni_reader_open()` checks BAM size, nanosecond-resolution mtime, and SAM header hash
+against the index metadata. Indexes without nanosecond mtime metadata must be rebuilt unless
+`ignore_metadata` is enabled.

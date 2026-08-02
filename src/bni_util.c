@@ -57,7 +57,8 @@ uint64_t bni_fnv1a64(const void *data, size_t len) {
   return h;
 }
 
-int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out) {
+int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out,
+                      uint32_t *mtime_nsec_out) {
   struct stat st;
   if (stat(path, &st) != 0) {
     return -1;
@@ -67,6 +68,13 @@ int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out) 
   }
   if (mtime_out) {
     *mtime_out = (int64_t)st.st_mtime;
+  }
+  if (mtime_nsec_out) {
+#if defined(__APPLE__)
+    *mtime_nsec_out = (uint32_t)st.st_mtimespec.tv_nsec;
+#else
+    *mtime_nsec_out = (uint32_t)st.st_mtim.tv_nsec;
+#endif
   }
   return 0;
 }

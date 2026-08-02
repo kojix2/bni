@@ -97,7 +97,8 @@ static uint64_t header_hash64(sam_hdr_t *hdr) {
 static int check_metadata(const bni_index_t *idx, const char *bam_path, sam_hdr_t *hdr) {
   uint64_t bam_size = 0;
   int64_t bam_mtime = 0;
-  if (bni_file_metadata(bam_path, &bam_size, &bam_mtime) != 0) {
+  uint32_t bam_mtime_nsec = 0;
+  if (bni_file_metadata(bam_path, &bam_size, &bam_mtime, &bam_mtime_nsec) != 0) {
     bni_print_error("could not stat %s: %s", bam_path, strerror(errno));
     return -1;
   }
@@ -109,6 +110,16 @@ static int check_metadata(const bni_index_t *idx, const char *bam_path, sam_hdr_
   if (idx->header.bam_mtime != bam_mtime) {
     bni_print_error(
         "BAM mtime differs from index metadata; rebuild the BNI index or use --ignore-metadata");
+    return -1;
+  }
+  if ((idx->header.flags & BNI_FLAG_MTIME_NSEC) == 0) {
+    bni_print_error("BNI index lacks nanosecond mtime metadata; rebuild the index or use "
+                    "--ignore-metadata");
+    return -1;
+  }
+  if (idx->header.bam_mtime_nsec != bam_mtime_nsec) {
+    bni_print_error("BAM mtime nanoseconds differ from index metadata; rebuild the BNI index or "
+                    "use --ignore-metadata");
     return -1;
   }
   uint64_t hh = header_hash64(hdr);
@@ -438,7 +449,7 @@ static void report_missing_request(name_request_t *request, int list_missing,
   (*missing_out)++;
 }
 
-static int load_name_requests(FILE *nf, name_request_vec_t *requests) {
+static int load_name_requests(FILE *nf, const char *name_path, name_request_vec_t *requests) {
   char *line = NULL;
   size_t cap = 0;
   ssize_t nread;
@@ -461,6 +472,15 @@ static int load_name_requests(FILE *nf, name_request_vec_t *requests) {
       status = -1;
       break;
     }
+  }
+  if (status == 0 && ferror(nf)) {
+    int read_errno = errno;
+    if (read_errno != 0) {
+      bni_print_error("failed reading name file %s: %s", name_path, strerror(read_errno));
+    } else {
+      bni_print_error("failed reading name file %s: I/O error", name_path);
+    }
+    status = -1;
   }
   free(line);
   return status;
@@ -762,7 +782,7 @@ static int fetch_from_name_file(const get_options_t *options, bni_reader_t *read
 
   int status = 0;
   name_request_vec_t requests = {0, 0, 0};
-  if (load_name_requests(name_file, &requests) != 0 ||
+  if (load_name_requests(name_file, options->names_path, &requests) != 0 ||
       assign_name_request_entries(&reader->idx, &requests) != 0) {
     status = 1;
   } else {

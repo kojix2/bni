@@ -35,6 +35,7 @@ enum {
   BNI_HEADER_HASH_OFFSET = 72,
   BNI_HEADER_SORT_ORDER_OFFSET = 80,
   BNI_HEADER_ENTRY_SIZE_OFFSET = 84,
+  BNI_HEADER_BAM_MTIME_NSEC_OFFSET = 88,
 
   BNI_ENTRY_FIRST_NAME_OFFSET = 0,
   BNI_ENTRY_LAST_NAME_OFFSET = 8,
@@ -98,6 +99,7 @@ static void encode_header(unsigned char out[BNI_HEADER_SIZE], const bni_file_hea
   put_u64le(out + BNI_HEADER_HASH_OFFSET, h->header_hash);
   put_u32le(out + BNI_HEADER_SORT_ORDER_OFFSET, h->sort_order);
   put_u32le(out + BNI_HEADER_ENTRY_SIZE_OFFSET, h->entry_size);
+  put_u32le(out + BNI_HEADER_BAM_MTIME_NSEC_OFFSET, h->bam_mtime_nsec);
 }
 
 static int decode_header(const unsigned char in[BNI_HEADER_SIZE], bni_file_header_t *h) {
@@ -120,6 +122,7 @@ static int decode_header(const unsigned char in[BNI_HEADER_SIZE], bni_file_heade
   h->header_hash = get_u64le(in + BNI_HEADER_HASH_OFFSET);
   h->sort_order = get_u32le(in + BNI_HEADER_SORT_ORDER_OFFSET);
   h->entry_size = get_u32le(in + BNI_HEADER_ENTRY_SIZE_OFFSET);
+  h->bam_mtime_nsec = get_u32le(in + BNI_HEADER_BAM_MTIME_NSEC_OFFSET);
   return 0;
 }
 
@@ -157,6 +160,10 @@ static int validate_header(const bni_file_header_t *h) {
   }
   if ((h->flags & BNI_FLAG_BGZF_BLOCKS) == 0) {
     bni_print_error("unsupported BNI mode flags 0x%08x", h->flags);
+    return -1;
+  }
+  if ((h->flags & BNI_FLAG_MTIME_NSEC) != 0 && h->bam_mtime_nsec >= 1000000000u) {
+    bni_print_error("invalid BAM mtime nanoseconds %u", h->bam_mtime_nsec);
     return -1;
   }
   if (h->entries_offset < BNI_HEADER_SIZE) {

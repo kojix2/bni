@@ -29,6 +29,7 @@
 
 #define BNI_SORT_QUERYNAME_LEX 1u
 #define BNI_FLAG_BGZF_BLOCKS 0x00000001u
+#define BNI_FLAG_MTIME_NSEC 0x00000002u
 
 typedef struct {
   uint32_t version;
@@ -44,6 +45,7 @@ typedef struct {
   uint64_t header_hash;
   uint32_t sort_order;
   uint32_t entry_size;
+  uint32_t bam_mtime_nsec;
 } bni_file_header_t;
 
 typedef struct {

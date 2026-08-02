@@ -20,19 +20,24 @@ Header fields are little-endian:
 magic                  4 bytes  "BNI\1"
 version                u32      2
 header_size            u32      128
-flags                  u32      BNI_FLAG_BGZF_BLOCKS
+flags                  u32      BNI_FLAG_BGZF_BLOCKS | BNI_FLAG_MTIME_NSEC
 n_blocks               u64      number of BGZF-block entries
 n_records              u64      total BAM records indexed
 entries_offset         u64      byte offset of entry table
 strings_offset         u64      byte offset of string table
 strings_size           u64      byte size of string table
 bam_size               u64      source BAM file size
-bam_mtime              i64      source BAM mtime
+bam_mtime              i64      source BAM mtime, whole seconds
 header_hash            u64      FNV-1a 64-bit over SAM header text
 sort_order             u32      1 = queryname:lexicographical
 entry_size             u32      40
+bam_mtime_nsec         u32      source BAM mtime nanosecond component
 reserved               zero-filled to 128 bytes
 ```
+
+`BNI_FLAG_MTIME_NSEC` indicates that `bam_mtime_nsec` is present. Metadata validation requires
+this flag; older indexes without nanosecond mtime metadata must be rebuilt unless metadata checks
+are explicitly disabled.
 
 Each entry is 40 bytes, little-endian:
 

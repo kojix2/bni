@@ -41,6 +41,15 @@ if [ "$actual" != "read1 read1 read2 " ]; then
   echo "unexpected batched name-file output order/counts: $actual" >&2
   exit 1
 fi
+if "$BNI" get -O sam --no-header -f "$tmp" "$tmp/in.name.bam" \
+  > /dev/null 2> "$tmp/name-read-error.err"; then
+  echo "expected name-file read error to fail" >&2
+  exit 1
+fi
+if ! grep -q 'failed reading name file' "$tmp/name-read-error.err"; then
+  echo "expected name-file read error message" >&2
+  exit 1
+fi
 printf 'read11\n' > "$tmp/missing_names.txt"
 "$BNI" get -O sam --no-header --missing-ok --list-missing -f "$tmp/missing_names.txt" "$tmp/in.name.bam" > "$tmp/missing.sam" 2> "$tmp/missing.err"
 if ! grep -qx 'read11' "$tmp/missing.err"; then
@@ -111,6 +120,28 @@ if ! cmp -s "$tmp/atomic-failure.bni" "$tmp/atomic-failure.bni.backup"; then
 fi
 if find "$tmp" -maxdepth 1 -name 'atomic-failure.bni.tmp.*' -print -quit | grep -q .; then
   echo "failed atomic write left a temporary index" >&2
+  exit 1
+fi
+
+cc -Wall -Wextra -std=c11 tests/bump_mtime_nsec.c -o "$tmp/bump_mtime_nsec"
+cp "$tmp/in.name.bam" "$tmp/nsec-stale.bam"
+"$BNI" index -f "$tmp/nsec-stale.bam"
+"$tmp/bump_mtime_nsec" "$tmp/nsec-stale.bam"
+if "$BNI" check "$tmp/nsec-stale.bam" > /dev/null 2> "$tmp/nsec-check.err"; then
+  echo "expected nanosecond-only mtime change to fail metadata check" >&2
+  exit 1
+fi
+if ! grep -q 'mtime nanoseconds mismatch' "$tmp/nsec-check.err"; then
+  echo "expected nanosecond mtime mismatch error from check" >&2
+  exit 1
+fi
+if "$BNI" get -O sam --no-header "$tmp/nsec-stale.bam" read1 \
+  > /dev/null 2> "$tmp/nsec-get.err"; then
+  echo "expected nanosecond-only mtime change to fail get" >&2
+  exit 1
+fi
+if ! grep -q 'mtime nanoseconds differ' "$tmp/nsec-get.err"; then
+  echo "expected nanosecond mtime mismatch error from get" >&2
   exit 1
 fi
 

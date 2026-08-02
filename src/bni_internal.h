@@ -8,7 +8,8 @@
 
 char *bni_default_index_path(const char *bam_path);
 uint64_t bni_fnv1a64(const void *data, size_t len);
-int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out);
+int bni_file_metadata(const char *path, uint64_t *size_out, int64_t *mtime_out,
+                      uint32_t *mtime_nsec_out);
 int bni_reject_output_collision(const char *output_path, const char *input_path,
                                 const char *input_description);
 int bni_write_index_file_exclusive(const char *path, const bni_file_header_t *header,

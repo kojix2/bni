@@ -99,6 +99,9 @@ int bni_cmd_stats(int argc, char **argv) {
   printf("string_table_bytes: %s\n", str_buf);
   printf("bam_size: %s\n", bam_buf);
   print_mtime(idx.header.bam_mtime);
+  if ((idx.header.flags & BNI_FLAG_MTIME_NSEC) != 0) {
+    printf("bam_mtime_nsec: %09u\n", idx.header.bam_mtime_nsec);
+  }
   printf("header_hash_fnv1a64: %016" PRIx64 "\n", idx.header.header_hash);
   bni_index_destroy(&idx);
   free(default_index);

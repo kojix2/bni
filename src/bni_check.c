@@ -41,8 +41,9 @@ static uint64_t header_hash64(sam_hdr_t *hdr) {
 static int check_metadata(const bni_index_t *idx, const char *bam_path, sam_hdr_t *hdr) {
   uint64_t bam_size = 0;
   int64_t bam_mtime = 0;
+  uint32_t bam_mtime_nsec = 0;
   int ok = 0;
-  if (bni_file_metadata(bam_path, &bam_size, &bam_mtime) != 0) {
+  if (bni_file_metadata(bam_path, &bam_size, &bam_mtime, &bam_mtime_nsec) != 0) {
     bni_print_error("could not stat %s: %s", bam_path, strerror(errno));
     return -1;
   }
@@ -54,6 +55,14 @@ static int check_metadata(const bni_index_t *idx, const char *bam_path, sam_hdr_
   if (idx->header.bam_mtime != bam_mtime) {
     bni_print_error("BAM mtime mismatch: index=%" PRId64 " actual=%" PRId64, idx->header.bam_mtime,
                     bam_mtime);
+    ok = -1;
+  }
+  if ((idx->header.flags & BNI_FLAG_MTIME_NSEC) == 0) {
+    bni_print_error("BNI index lacks nanosecond mtime metadata; rebuild the index");
+    ok = -1;
+  } else if (idx->header.bam_mtime_nsec != bam_mtime_nsec) {
+    bni_print_error("BAM mtime nanoseconds mismatch: index=%u actual=%u",
+                    idx->header.bam_mtime_nsec, bam_mtime_nsec);
     ok = -1;
   }
   uint64_t hh = header_hash64(hdr);
